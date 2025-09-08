@@ -28,11 +28,11 @@ class DividasView(ft.UserControl, TranslationMixin):
             width=400,
             height=50,
             text_size=14,
-            color=ft.colors.WHITE,
-            label_style=ft.TextStyle(color=ft.colors.WHITE),
+            color=ft.colors.BLACK,
+            label_style=ft.TextStyle(color=ft.colors.BLUE_900),
             focused_border_color=ft.colors.BLUE,
             border_color=ft.colors.BLUE_400,
-            bgcolor=ft.colors.BLUE_900,
+            bgcolor=ft.colors.WHITE,
             focused_color=ft.colors.BLACK,
             text_style=ft.TextStyle(color=ft.colors.BLACK),
             on_change=self.carregar_dividas_cliente
@@ -44,11 +44,11 @@ class DividasView(ft.UserControl, TranslationMixin):
             width=400,
             height=50,
             text_size=14,
-            color=ft.colors.WHITE,
-            label_style=ft.TextStyle(color=ft.colors.WHITE),
+            color=ft.colors.BLACK,
+            label_style=ft.TextStyle(color=ft.colors.BLUE_900),
             focused_border_color=ft.colors.BLUE,
             border_color=ft.colors.BLUE_400,
-            bgcolor=ft.colors.BLUE_900,
+            bgcolor=ft.colors.WHITE,
             focused_color=ft.colors.BLACK,
             text_style=ft.TextStyle(color=ft.colors.BLACK)
         )
@@ -93,40 +93,59 @@ class DividasView(ft.UserControl, TranslationMixin):
         # Campo para mostrar o total da dívida
         self.total_text = ft.Text(
             f"Total: MT {self.total_divida:.2f}",
-            size=20,
+            size=22,
             weight=ft.FontWeight.BOLD,
-            color=ft.colors.BLACK
+            color=ft.colors.BLUE_900
+        )
+        
+        # Campo de busca de cliente
+        self.busca_cliente = ft.TextField(
+            label="Buscar Cliente (Nome ou NUIT)",
+            width=400,
+            height=50,
+            text_size=14,
+            color=ft.colors.BLACK,
+            label_style=ft.TextStyle(color=ft.colors.BLACK),
+            focused_border_color=ft.colors.BLUE,
+            border_color=ft.colors.BLUE_400,
+            prefix_icon=ft.icons.SEARCH,
+            on_change=self.filtrar_dividas
         )
 
     def inicializar_tabelas(self):
         # Tabela de itens da dívida atual
         self.itens_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Produto", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Quantidade", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Preço Unit.", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Subtotal", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Ações", color=ft.colors.BLACK)),
+                ft.DataColumn(ft.Text("Produto", color=ft.colors.BLUE_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Quantidade", color=ft.colors.BLUE_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Preço Unit.", color=ft.colors.BLUE_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Subtotal", color=ft.colors.BLUE_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Ações", color=ft.colors.BLUE_900, weight=ft.FontWeight.BOLD)),
             ],
-            rows=[]
+            rows=[],
+            border_radius=10
         )
         apply_table_style(self.itens_table)
         
         # Tabela de dívidas do cliente
         self.dividas_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Data", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Valor Total", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Valor Pago", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Saldo", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Status", color=ft.colors.BLACK)),
-                ft.DataColumn(ft.Text("Ações", color=ft.colors.BLACK)),
+                ft.DataColumn(ft.Text("Data", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Valor Total", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Valor Pago", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Status", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Ações", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
             ],
-            rows=[]
+            rows=[],
+            border=ft.border.all(1, ft.colors.BLACK26),
+            border_radius=10,
+            heading_row_height=50,
+            column_spacing=20
         )
         apply_table_style(self.dividas_table)
 
     def build(self):
+        
         # Header com cores padrão (azul)
         header = ft.Container(
             content=ft.Row([
@@ -137,58 +156,79 @@ class DividasView(ft.UserControl, TranslationMixin):
                 ),
                 ft.Icon(
                     name=ft.icons.ACCOUNT_BALANCE_WALLET,
-                    size=30,
+                    size=35,  # Aumentado de 30 para 35
                     color=ft.colors.WHITE
                 ),
                 ft.Text(
-                    "Gestão de Dívidas",
-                    size=20,
+                    "GESTÃO DE DÍVIDAS",  # Texto em maiúsculas
+                    size=24,  # Aumentado de 20 para 24
+                    weight=ft.FontWeight.BOLD,
                     color=ft.colors.WHITE
                 )
             ]),
             gradient=ft.LinearGradient(
                 begin=ft.alignment.top_left,
                 end=ft.alignment.bottom_right,
-                colors=[ft.colors.INDIGO_900, ft.colors.INDIGO_700]
+                colors=[ft.colors.BLUE_900, ft.colors.BLUE_700]  # Alterado para azul
             ),
-            padding=20,
-            border_radius=10
+            padding=25,  # Aumentado de 20 para 25
+            border_radius=10,
+            shadow=ft.BoxShadow(
+                spread_radius=1,
+                blur_radius=10,
+                color=ft.colors.with_opacity(0.3, ft.colors.BLACK)
+            )
         )
 
         # Nova Dívida
         nova_divida = ft.Container(
             content=ft.Column([
-                ft.Text(
-                    "Nova Dívida",
-                    size=16,
-                    weight=ft.FontWeight.BOLD,
-                    color=ft.colors.BLACK
-                ),
+                ft.Row([
+                    ft.Text(
+                        "NOVA DÍVIDA",  # Texto em maiúsculas
+                        size=18,  # Aumentado de 16 para 18
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.colors.BLUE_900  # Alterado para azul
+                    )
+                ]),
+                ft.Container(height=10),  # Espaçamento
                 ft.Row([self.cliente_dropdown]),
                 self.info_desconto,
+                ft.Row([self.produto_dropdown]),
                 ft.Row([
-                    self.produto_dropdown,
                     self.quantidade_field,
                     ft.ElevatedButton(
                         "Adicionar Item",
                         icon=ft.icons.ADD,
-                        on_click=self.adicionar_item
+                        on_click=self.adicionar_item,
+                        style=ft.ButtonStyle(
+                            bgcolor=ft.colors.BLUE_600,
+                            color=ft.colors.WHITE
+                        ),
+                        disabled=False
                     )
                 ]),
                 ft.Container(
                     content=self.itens_table,
                     height=200,
-                    border=ft.border.all(1, ft.colors.BLACK26),
+                    border=ft.border.all(1, ft.colors.BLUE_400),
                     border_radius=10,
-                    padding=10
+                    padding=15
                 ),
+                ft.Container(height=10),  # Espaçamento
                 self.observacao_field,
+                ft.Container(height=10),  # Espaçamento
                 ft.Row([
                     self.total_text,
                     ft.ElevatedButton(
                         "Salvar Dívida",
                         icon=ft.icons.SAVE,
-                        on_click=self.salvar_divida
+                        on_click=self.salvar_divida,
+                        style=ft.ButtonStyle(
+                            bgcolor=ft.colors.GREEN_600,
+                            color=ft.colors.WHITE
+                        ),
+                        disabled=False
                     )
                 ])
             ]),
@@ -206,23 +246,23 @@ class DividasView(ft.UserControl, TranslationMixin):
         self.dividas_container = ft.Container(
             content=ft.Column(
                 [self.dividas_table],
-                scroll=ft.ScrollMode.ALWAYS,
+                scroll=ft.ScrollMode.AUTO,
                 expand=True
             ),
-            height=250,
+            height=400,
             border=ft.border.all(1, ft.colors.BLACK26),
             border_radius=10,
-            padding=10,
+            padding=15,
             bgcolor=ft.colors.WHITE
         )
 
         lista_dividas = ft.Container(
             content=ft.Column([
                 ft.Text(
-                    "Dívidas do Cliente",
-                    size=16,
+                    "DÍVIDAS DO CLIENTE",  # Texto em maiúsculas
+                    size=18,  # Aumentado de 16 para 18
                     weight=ft.FontWeight.BOLD,
-                    color=ft.colors.BLACK
+                    color=ft.colors.BLUE_900  # Alterado para azul
                 ),
                 self.dividas_container
             ]),
@@ -240,18 +280,45 @@ class DividasView(ft.UserControl, TranslationMixin):
         mostrar_todas = ft.ElevatedButton(
             "Mostrar Todas as Dívidas",
             icon=ft.icons.LIST_ALT,
-            on_click=self.carregar_todas_dividas
+            on_click=self.carregar_todas_dividas,
+            style=ft.ButtonStyle(
+                bgcolor=ft.colors.BLUE_600,
+                color=ft.colors.WHITE
+            ),
+            width=200,
+            disabled=False
         )
 
+        # Habilitar todos os controles interativos
+        self.cliente_dropdown.disabled = False
+        self.produto_dropdown.disabled = False
+        self.quantidade_field.disabled = False
+        
+        # Layout principal com duas colunas lado a lado
         return ft.Column(
             controls=[
                 header,
                 ft.Container(height=20),
-                nova_divida,
-                ft.Container(height=20),
-                lista_dividas,
-                ft.Container(height=20),
-                mostrar_todas
+                ft.Row(
+                    [
+                        # Coluna da esquerda - Nova Dívida
+                        ft.Container(
+                            content=nova_divida,
+                            expand=1
+                        ),
+                        # Coluna da direita - Lista de Dívidas
+                        ft.Container(
+                            content=ft.Column([
+                                lista_dividas,
+                                ft.Container(height=10),
+                                mostrar_todas
+                            ]),
+                            expand=1
+                        )
+                    ],
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.START
+                )
             ],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
@@ -292,7 +359,7 @@ class DividasView(ft.UserControl, TranslationMixin):
             self.produto_dropdown.options = [
                 ft.dropdown.Option(
                     key=str(p['id']),
-                    text=f"{p['nome']} | {p['descricao'] or '-'} | Estoque: {p['estoque']}{' KG' if p['venda_por_peso'] else ' un'} | MT {p['preco_venda']:.2f}{'/KG' if p['venda_por_peso'] else ''}"
+                    text=f"{p['nome'][:25]}{'...' if len(p['nome']) > 25 else ''} | Est: {p['estoque']}{' KG' if p['venda_por_peso'] else ''} | MT {p['preco_venda']:.2f}"
                 ) for p in produtos
             ]
             self.update()
@@ -309,15 +376,10 @@ class DividasView(ft.UserControl, TranslationMixin):
                 SELECT nome, especial, desconto_divida FROM clientes WHERE id = ?
             """, (self.cliente_dropdown.value,))
             
-            # Verifica se o cliente é especial e aplica o desconto
-            if cliente and cliente['especial'] and cliente['desconto_divida']:
-                self.percentual_desconto = cliente['desconto_divida']
-                self.info_desconto.value = f"🎯 Cliente especial: desconto de {self.percentual_desconto * 100:.1f}% aplicado"
-                self.info_desconto.visible = True
-                self.info_desconto.color = ft.colors.GREEN
-            else:
-                self.percentual_desconto = 0.0
-                self.info_desconto.visible = False
+            # Não há mais desconto
+            self.percentual_desconto = 0.0
+            self.info_desconto.visible = False
+            self.desconto_aplicado = 0.0
             
             # Busca as dívidas com JOIN para obter o nome do cliente
             dividas = self.db.fetchall("""
@@ -338,32 +400,17 @@ class DividasView(ft.UserControl, TranslationMixin):
                 ORDER BY d.data_divida DESC
             """, (self.cliente_dropdown.value,))
             
-            # Recria a tabela com os novos dados
+            # Recria a tabela com os novos dados - apenas nome do cliente e botão de detalhes
             self.dividas_table = ft.DataTable(
                 columns=[
-                    ft.DataColumn(ft.Text("Data", color=ft.colors.BLACK)),
-                    ft.DataColumn(ft.Text("Valor Total", color=ft.colors.BLACK)),
-                    ft.DataColumn(ft.Text("Desconto", color=ft.colors.BLACK)),
-                    ft.DataColumn(ft.Text("Valor Pago", color=ft.colors.BLACK)),
-                    ft.DataColumn(ft.Text("Saldo", color=ft.colors.BLACK)),
-                    ft.DataColumn(ft.Text("Status", color=ft.colors.BLACK)),
+                    ft.DataColumn(ft.Text("Cliente", color=ft.colors.BLACK)),
                     ft.DataColumn(ft.Text("Ações", color=ft.colors.BLACK)),
                 ],
+                border_radius=10,
                 rows=[
                     ft.DataRow(
                         cells=[
-                            ft.DataCell(ft.Text(d['data_divida'].split()[0])),
-                            ft.DataCell(ft.Text(f"MT {d['valor_total']:.2f}", weight=ft.FontWeight.BOLD)),
-                            ft.DataCell(
-                                ft.Text(
-                                    f"MT {d['desconto_aplicado']:.2f}",
-                                    color=ft.colors.GREEN,
-                                    weight=ft.FontWeight.BOLD
-                                ) if d['desconto_aplicado'] and d['desconto_aplicado'] > 0 else ft.Text("-")
-                            ),
-                            ft.DataCell(ft.Text(f"MT {d['valor_pago']:.2f}")),
-                            ft.DataCell(ft.Text(f"MT {(d['valor_total'] - d['valor_pago']):.2f}")),
-                            ft.DataCell(ft.Text(d['status'])),
+                            ft.DataCell(ft.Text(d['cliente_nome'], weight=ft.FontWeight.BOLD)),
                             ft.DataCell(
                                 ft.Row([
                                     ft.IconButton(
@@ -400,7 +447,8 @@ class DividasView(ft.UserControl, TranslationMixin):
             
             # Atualiza o container da tabela
             if hasattr(self, 'dividas_container'):
-                self.dividas_container.content = self.dividas_table
+                # Mantém o scroll horizontal ao atualizar a tabela
+                self.dividas_container.content.controls[0].content = self.dividas_table
                 self.dividas_container.update()
             
             self.update()
@@ -539,23 +587,16 @@ class DividasView(ft.UserControl, TranslationMixin):
                     )
                 )
             
-            # Calcula o desconto se aplicável
-            if self.percentual_desconto > 0:
-                self.desconto_aplicado = self.valor_original * self.percentual_desconto
-                self.total_divida = self.valor_original - self.desconto_aplicado
-            else:
-                self.desconto_aplicado = 0
-                self.total_divida = self.valor_original
+            # Não há mais desconto
+            self.desconto_aplicado = 0
+            self.total_divida = self.valor_original
             
             # Força a atualização da tabela
             self.itens_table.update()
             
             # Atualiza o texto do total
             if hasattr(self, 'total_text'):
-                if self.percentual_desconto > 0:
-                    self.total_text.value = f"Total Original: MT {self.valor_original:.2f} | Desconto: MT {self.desconto_aplicado:.2f} | Total Final: MT {self.total_divida:.2f}"
-                else:
-                    self.total_text.value = f"Total: MT {self.total_divida:.2f}"
+                self.total_text.value = f"Total: MT {self.total_divida:.2f}"
                 self.total_text.update()
             
             self.update()
@@ -838,9 +879,9 @@ class DividasView(ft.UserControl, TranslationMixin):
             """, (
                 self.cliente_dropdown.value,
                 self.total_divida,
-                self.valor_original,
-                self.desconto_aplicado,
-                self.percentual_desconto,
+                self.total_divida,  # valor_original igual ao total_divida
+                0,  # sem desconto
+                0,  # sem percentual de desconto
                 self.observacao_field.value,
                 self.usuario['id'],
                 'Pendente'
@@ -989,7 +1030,37 @@ class DividasView(ft.UserControl, TranslationMixin):
                 
                 self.db.conn.commit()
                 fechar_dialogo(None)
-                self.carregar_dividas_cliente(None)
+                
+                # Atualizar tabela de dívidas em tempo real
+                if hasattr(self, 'cliente_dropdown') and self.cliente_dropdown.value:
+                    # Se tem cliente selecionado, recarregar suas dívidas
+                    self.carregar_dividas_cliente(None)
+                else:
+                    # Se não tem cliente selecionado, recarregar todas as dívidas
+                    self.carregar_todas_dividas(None)
+                
+                # Forçar atualização da UI
+                self.page.update()
+                
+                # Atualizar o dashboard se estiver visível
+                try:
+                    if hasattr(self.page, 'dashboard_view') and self.page.dashboard_view and hasattr(self.page.dashboard_view, 'build'):
+                        try:
+                            # Tenta atualizar o dashboard sem forçar a reconstrução completa
+                            if hasattr(self.page.dashboard_view, 'atualizar_valores'):
+                                self.page.dashboard_view.atualizar_valores()
+                            else:
+                                self.page.dashboard_view.build()
+                            self.page.update()
+                        except Exception as e:
+                            print(f"Erro ao atualizar dashboard (tentativa 1): {e}")
+                            # Tenta uma abordagem mais segura
+                            try:
+                                self.page.update()
+                            except Exception as e2:
+                                print(f"Erro ao atualizar a página: {e2}")
+                except Exception as e:
+                    print(f"Erro ao acessar dashboard_view: {e}")
                 
                 self.page.show_snack_bar(
                     ft.SnackBar(
@@ -1106,15 +1177,19 @@ class DividasView(ft.UserControl, TranslationMixin):
             # Cria as tabelas de detalhes
             itens_table = ft.DataTable(
                 columns=[
-                    ft.DataColumn(ft.Text("Produto")),
-                    ft.DataColumn(ft.Text("Qtd/Peso")),
-                    ft.DataColumn(ft.Text("Preço Unit.")),
-                    ft.DataColumn(ft.Text("Subtotal"))
+                    ft.DataColumn(ft.Text("Produto", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                    ft.DataColumn(ft.Text("Qtd/Peso", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                    ft.DataColumn(ft.Text("Preço Unit.", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                    ft.DataColumn(ft.Text("Subtotal", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD))
                 ],
+                border=ft.border.all(1, ft.colors.BLACK26),
+                border_radius=10,
+                heading_row_height=30,
+                column_spacing=20,
                 rows=[
                     ft.DataRow(
                         cells=[
-                            ft.DataCell(ft.Text(f"{i['produto_nome']} ({i['produto_codigo']})")),
+                            ft.DataCell(ft.Text(f"{i['produto_nome']} ({i['produto_codigo']})", color=ft.colors.BLACK)),
                             ft.DataCell(ft.Text(
                                 f"{i['quantidade']:.3f} KG" if i['venda_por_peso'] else f"{i['quantidade']:.0f} un"
                             )),
@@ -1129,47 +1204,82 @@ class DividasView(ft.UserControl, TranslationMixin):
             
             pagamentos_table = ft.DataTable(
                 columns=[
-                    ft.DataColumn(ft.Text("Data")),
-                    ft.DataColumn(ft.Text("Valor")),
-                    ft.DataColumn(ft.Text("Forma"))
+                    ft.DataColumn(ft.Text("Data", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                    ft.DataColumn(ft.Text("Valor", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD)),
+                    ft.DataColumn(ft.Text("Forma", color=ft.colors.BLACK, weight=ft.FontWeight.BOLD))
                 ],
+                border=ft.border.all(1, ft.colors.BLACK26),
+                border_radius=10,
+                heading_row_height=30,
+                column_spacing=20,
                 rows=[
                     ft.DataRow(
                         cells=[
-                            ft.DataCell(ft.Text(p['data_pagamento'])),
-                            ft.DataCell(ft.Text(f"MT {p['valor']:.2f}")),
-                            ft.DataCell(ft.Text(p['forma_pagamento']))
+                            ft.DataCell(ft.Text(p['data_pagamento'], color=ft.colors.BLACK)),
+                            ft.DataCell(ft.Text(f"MT {p['valor']:.2f}", color=ft.colors.BLACK)),
+                            ft.DataCell(ft.Text(p['forma_pagamento'], color=ft.colors.BLACK))
                         ]
                     ) for p in pagamentos
                 ]
             )
             
             dialog = ft.AlertDialog(
-                title=ft.Text("Detalhes da Dívida"),
+                title=ft.Text("Detalhes da Dívida", weight=ft.FontWeight.BOLD, size=20),
                 content=ft.Column([
-                    ft.Text("Itens da Dívida:", size=16, weight=ft.FontWeight.BOLD),
-                    itens_table,
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"Cliente: {divida['cliente_nome']}", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(f"Data: {divida['data_divida']}", size=14, color=ft.colors.BLACK),
+                            ft.Text(f"Status: {divida['status']}", 
+                                   size=14, 
+                                   weight=ft.FontWeight.BOLD,
+                                   color=ft.colors.GREEN if divida['status'] == 'Quitado' else ft.colors.RED),
+                        ]),
+                        padding=10,
+                        bgcolor=ft.colors.BLUE_GREY_50,
+                        border_radius=5,
+                        width=600
+                    ),
                     ft.Divider(),
-                    ft.Text("Pagamentos Realizados:", size=16, weight=ft.FontWeight.BOLD),
-                    pagamentos_table if pagamentos else ft.Text("Nenhum pagamento registrado"),
+                    ft.Text("Itens da Dívida:", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                    ft.Container(
+                        content=itens_table,
+                        padding=15,
+                        border_radius=10,
+                        border=ft.border.all(1, ft.colors.BLACK26),
+                        bgcolor=ft.colors.WHITE
+                    ),
                     ft.Divider(),
-                    # Informações de desconto se aplicável
-                    ft.Text(
-                        f"Valor Original: MT {info_divida['valor_original']:.2f}",
-                        color=ft.colors.BLUE
-                    ) if info_divida and info_divida['valor_original'] > 0 else ft.Container(),
-                    ft.Text(
-                        f"Desconto Aplicado: MT {info_divida['desconto_aplicado']:.2f} ({info_divida['percentual_desconto'] * 100:.1f}%)",
-                        color=ft.colors.GREEN
-                    ) if info_divida and info_divida['desconto_aplicado'] > 0 else ft.Container(),
-                    ft.Divider() if info_divida and info_divida['desconto_aplicado'] > 0 else ft.Container(),
-                    ft.Text(f"Total da Dívida: MT {divida['valor_total']:.2f}"),
-                    ft.Text(f"Total Pago: MT {divida['valor_pago']:.2f}"),
-                    ft.Text(
-                        f"Saldo Devedor: MT {(divida['valor_total'] - divida['valor_pago']):.2f}",
-                        color=ft.colors.RED if divida['valor_pago'] < divida['valor_total'] else ft.colors.GREEN
+                    ft.Text("Pagamentos Realizados:", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                    ft.Container(
+                        content=pagamentos_table if pagamentos else ft.Text("Nenhum pagamento registrado", color=ft.colors.BLACK),
+                        padding=15,
+                        border_radius=10,
+                        border=ft.border.all(1, ft.colors.BLACK26),
+                        bgcolor=ft.colors.WHITE
+                    ),
+                    ft.Divider(),
+                    # Resumo financeiro
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"Total da Dívida: MT {divida['valor_total']:.2f}", size=14, color=ft.colors.BLACK),
+                            ft.Text(f"Total Pago: MT {divida['valor_pago']:.2f}", size=14, color=ft.colors.BLACK),
+                            ft.Text(
+                                f"Saldo Devedor: MT {(divida['valor_total'] - divida['valor_pago']):.2f}",
+                                size=16,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.colors.RED if divida['valor_pago'] < divida['valor_total'] else ft.colors.GREEN
+                            )
+                        ]),
+                        padding=15,
+                        bgcolor=ft.colors.BLUE_GREY_50,
+                        border_radius=10,
+                        width=400
                     )
-                ], scroll=ft.ScrollMode.AUTO, height=400),
+                ], 
+                scroll=ft.ScrollMode.AUTO, 
+                height=600,
+                width=650),
                 actions=[
                     ft.ElevatedButton(
                         "Fechar",
@@ -1215,16 +1325,10 @@ class DividasView(ft.UserControl, TranslationMixin):
             
             self.todas_dividas = self.db.fetchall(query)
             
-            # Cria a nova tabela
+            # Cria a nova tabela - apenas nome do cliente e ações
             self.dividas_table = ft.DataTable(
                 columns=[
                     ft.DataColumn(ft.Text("Cliente")),
-                    ft.DataColumn(ft.Text("Data")),
-                    ft.DataColumn(ft.Text("Valor Total")),
-                    ft.DataColumn(ft.Text("Desconto")),
-                    ft.DataColumn(ft.Text("Valor Pago")),
-                    ft.DataColumn(ft.Text("Saldo")),
-                    ft.DataColumn(ft.Text("Status")),
                     ft.DataColumn(ft.Text("Ações"))
                 ],
                 rows=[]
@@ -1247,11 +1351,21 @@ class DividasView(ft.UserControl, TranslationMixin):
             # Atualiza a tabela com todas as dívidas
             self.atualizar_tabela_dividas(self.todas_dividas)
             
-            # Cria o container com o campo de busca e a tabela
+            # Cria o container com o campo de busca e a tabela - mantendo o tamanho original
             self.dividas_container.content = ft.Column([
                 self.busca_cliente,
                 ft.Container(height=10),
-                self.dividas_table
+                ft.Container(
+                    content=ft.Column(
+                        [self.dividas_table],
+                        scroll=ft.ScrollMode.AUTO
+                    ),
+                    border=ft.border.all(1, ft.colors.BLACK26),
+                    border_radius=10,
+                    padding=15,
+                    bgcolor=ft.colors.WHITE,
+                    height=250
+                )
             ])
             
             # Atualiza a view
@@ -1300,23 +1414,10 @@ class DividasView(ft.UserControl, TranslationMixin):
         try:
             self.dividas_table.rows.clear()
             for d in dividas:
-                saldo = d['valor_total'] - d['valor_pago']
                 self.dividas_table.rows.append(
                     ft.DataRow(
                         cells=[
-                            ft.DataCell(ft.Text(d['cliente_nome'])),
-                            ft.DataCell(ft.Text(d['data_divida'])),  # A data já vem formatada
-                            ft.DataCell(ft.Text(f"MT {d['valor_total']:.2f}")),
-                            ft.DataCell(
-                                ft.Text(
-                                    f"MT {d['desconto_aplicado']:.2f}",
-                                    color=ft.colors.GREEN,
-                                    weight=ft.FontWeight.BOLD
-                                ) if d['desconto_aplicado'] and d['desconto_aplicado'] > 0 else ft.Text("-")
-                            ),
-                            ft.DataCell(ft.Text(f"MT {d['valor_pago']:.2f}")),
-                            ft.DataCell(ft.Text(f"MT {saldo:.2f}")),
-                            ft.DataCell(ft.Text(d['status'])),
+                            ft.DataCell(ft.Text(d['cliente_nome'], weight=ft.FontWeight.BOLD)),
                             ft.DataCell(
                                 ft.Row([
                                     ft.IconButton(
@@ -1333,7 +1434,14 @@ class DividasView(ft.UserControl, TranslationMixin):
                                         tooltip="Ver Detalhes",
                                         data=d,
                                         on_click=self.ver_detalhes
-                                    )
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.icons.DELETE_FOREVER,
+                                        icon_color=ft.colors.RED,
+                                        tooltip="Remover Dívida",
+                                        data=d,
+                                        on_click=self.confirmar_remocao_divida
+                                    ) if d['status'] != 'Quitado' else ft.Container(width=0)
                                 ])
                             )
                         ]

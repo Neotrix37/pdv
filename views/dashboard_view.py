@@ -1,8 +1,13 @@
+import asyncio
 import flet as ft
 from datetime import datetime
 from database.database import Database
 from utils.translations import get_text
 from utils.translation_mixin import TranslationMixin
+from repositories.sync_manager import SyncManager
+from utils.status_indicator import StatusIndicator
+import asyncio
+from typing import List, Dict, Any
 
 class DashboardView(ft.UserControl, TranslationMixin):
     def __init__(self, page: ft.Page, usuario):
@@ -13,30 +18,47 @@ class DashboardView(ft.UserControl, TranslationMixin):
         self.db = Database()
         self.lang = page.data.get("language", "pt")
         
-        # Inicializar os textos dos valores
+        # Inicializar indicador de status de conexão
+        self.status_indicator = StatusIndicator()
+        
+        # Inicializar os textos dos valores com valores reais
+        # Usar os novos métodos que consideram os saques
+        total_vendas_mes = self.db.get_vendas_disponiveis_mes()  # Vendas menos saques
+        total_vendas_dia = self.db.get_total_vendas_hoje()
+        total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()
+        valor_estoque = self.db.get_valor_estoque()
+        valor_potencial = self.db.get_valor_venda_estoque()
+        lucro_mes = 0.0  # Inicializa com valor padrão
+        lucro_dia = 0.0  # Inicializa com valor padrão
+        
+        # Obter valores específicos para administradores
+        if self.usuario.get('is_admin'):
+            lucro_mes = self.db.get_lucro_disponivel_mes()  # Lucro menos saques
+            lucro_dia = self.db.get_lucro_dia()
+        
         self.vendas_mes = ft.Text(
-            value="MT 0.00",
+            value=f"MT {total_vendas_mes:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
         
         self.lucro_mes = ft.Text(
-            value="MT 0.00",
+            value=f"MT {lucro_mes:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
         
         self.vendas_dia = ft.Text(
-            value="MT 0.00",
+            value=f"MT {total_vendas_dia:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
         
         self.vendas_congelador = ft.Text(
-            value="MT 0.00",
+            value=f"MT {total_vendas_congelador:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
@@ -44,63 +66,82 @@ class DashboardView(ft.UserControl, TranslationMixin):
         
         # Adicionar novos textos para valor do estoque e valor potencial
         self.valor_estoque = ft.Text(
-            value="MT 0.00",
+            value=f"MT {valor_estoque:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
         
         self.valor_potencial = ft.Text(
-            value="MT 0.00",
+            value=f"MT {valor_potencial:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
-
-    def build(self):
-        # Força recálculo dos valores
-        total_vendas_mes = self.db.get_total_vendas_mes()
-        lucro_mes = self.get_lucro_mes()
-        total_vendas_dia = self.db.get_total_vendas_hoje()
-        total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()
-        valor_estoque = self.db.get_valor_estoque()
-        valor_potencial = self.db.get_valor_venda_estoque()
-
-        # Atualizar os textos com os valores
-        self.vendas_mes.value = f"MT {total_vendas_mes:.2f}"
-        self.lucro_mes.value = f"MT {lucro_mes:.2f}"
-        self.vendas_dia.value = f"MT {total_vendas_dia:.2f}"
-        self.vendas_congelador.value = f"MT {total_vendas_congelador:.2f}"
-        self.valor_estoque.value = f"MT {valor_estoque:.2f}"
-        self.valor_potencial.value = f"MT {valor_potencial:.2f}"
-
-        # Criar os cards com os valores atualizados
-        self.vendas_mes = ft.Text(
-            value=f"MT {total_vendas_mes:.2f}",
+        
+        # Adicionar atributo para o lucro diário
+        self.lucro_dia = ft.Text(
+            value=f"MT {lucro_dia:.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
-
-        self.lucro_mes = ft.Text(
-            value=f"MT {lucro_mes:.2f}",
+        
+        # Adicionar atributo para o lucro potencial do estoque
+        self.lucro_potencial = ft.Text(
+            value=f"MT {self.db.get_lucro_potencial_estoque():.2f}",
             size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
+        
+        print(f"Build - Vendas mês: MT {total_vendas_mes:.2f}")
+        print(f"Build - Lucro mês: MT {lucro_mes:.2f}")
+        
+        # Forçar atualização dos Text objects apenas se estiverem na página
+        try:
+            if hasattr(self, 'vendas_mes') and hasattr(self.vendas_mes, 'page') and self.vendas_mes.page:
+                self.vendas_mes.update()
+            if hasattr(self, 'lucro_mes') and hasattr(self.lucro_mes, 'page') and self.lucro_mes.page:
+                self.lucro_mes.update()
+            if hasattr(self, 'vendas_dia') and hasattr(self.vendas_dia, 'page') and self.vendas_dia.page:
+                self.vendas_dia.update()
+            if hasattr(self, 'vendas_congelador') and hasattr(self.vendas_congelador, 'page') and self.vendas_congelador.page:
+                self.vendas_congelador.update()
+            if hasattr(self, 'valor_estoque') and hasattr(self.valor_estoque, 'page') and self.valor_estoque.page:
+                self.valor_estoque.update()
+            if hasattr(self, 'valor_potencial') and hasattr(self.valor_potencial, 'page') and self.valor_potencial.page:
+                self.valor_potencial.update()
+            if hasattr(self, 'lucro_dia') and hasattr(self.lucro_dia, 'page') and self.lucro_dia.page:
+                self.lucro_dia.update()
+            if hasattr(self, 'lucro_potencial') and hasattr(self.lucro_potencial, 'page') and self.lucro_potencial.page:
+                self.lucro_potencial.update()
+        except Exception as e:
+            print(f"Erro ao atualizar componentes do dashboard: {e}")
+            print(f"Erro ao atualizar valores no build: {e}")
 
-        self.vendas_dia = ft.Text(
-            value=f"MT {total_vendas_dia:.2f}",
-            size=20,
-            weight=ft.FontWeight.BOLD,
-            color=ft.colors.BLACK
-        )
-
-        self.vendas_congelador = ft.Text(
-            value=f"MT {total_vendas_congelador:.2f}",
-            size=20,
-            weight=ft.FontWeight.BOLD,
-            color=ft.colors.BLACK
+        # Card de Lucro Potencial
+        card_lucro_potencial = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "Lucro Potencial do Estoque",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.colors.BLACK
+                    ),
+                    self.lucro_potencial
+                ],
+                spacing=5,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER
+            ),
+            width=200,
+            height=100,
+            bgcolor=ft.colors.WHITE,
+            border_radius=10,
+            padding=15,
+            alignment=ft.alignment.center,
+            tooltip="Valor estimado de lucro se todo o estoque for vendido"
         )
 
         # Criar os cards
@@ -171,24 +212,6 @@ class DashboardView(ft.UserControl, TranslationMixin):
         )
 
         card_vendas_congelador = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Text(
-                        "Vendas Congelador (Hoje)",
-                        size=16,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.colors.BLACK
-                    ),
-                    self.vendas_congelador
-                ],
-                spacing=5,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER
-            ),
-            width=200,
-            height=100,
-            bgcolor=ft.colors.WHITE,
-            border_radius=10,
-            padding=15,
             alignment=ft.alignment.center
         )
 
@@ -274,6 +297,71 @@ class DashboardView(ft.UserControl, TranslationMixin):
             rows=[]
         )
 
+    # Método para sincronizar dados
+    async def sincronizar_dados(self, e):
+        # Obter a referência do botão de sincronização
+        sync_button = e.control
+        
+        # Mostrar feedback visual de carregamento
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row(
+                controls=[
+                    ft.ProgressRing(width=20, height=20, stroke_width=2, color=ft.colors.WHITE),
+                    ft.Text("Sincronizando dados com o servidor...", color=ft.colors.WHITE)
+                ],
+                spacing=10
+            ),
+            bgcolor=ft.colors.BLUE_700,
+            duration=5000
+        )
+        
+        # Iniciar animação de rotação no botão
+        sync_button.icon = ft.icons.SYNC
+        sync_button.disabled = True
+        self.page.update()
+        
+        try:
+            # Executar a sincronização usando o novo SyncManager
+            sync_manager = SyncManager()
+            results = await sync_manager.sincronizar_todas_entidades()
+            
+            # Atualizar os valores do dashboard
+            self.atualizar_valores()
+            
+            # Mostrar mensagem de sucesso
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.icons.CHECK_CIRCLE, color=ft.colors.WHITE),
+                        ft.Text("Dados sincronizados com sucesso!", color=ft.colors.WHITE)
+                    ],
+                    spacing=10
+                ),
+                bgcolor=ft.colors.GREEN_700,
+                duration=3000
+            )
+            
+        except Exception as e:
+            # Em caso de erro, mostrar mensagem de erro
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.icons.ERROR, color=ft.colors.WHITE),
+                        ft.Text(f"Erro ao sincronizar: {str(e)}", color=ft.colors.WHITE)
+                    ],
+                    spacing=10
+                ),
+                bgcolor=ft.colors.RED_700,
+                duration=5000
+            )
+        finally:
+            # Restaurar o botão e atualizar a UI
+            sync_button.disabled = False
+            sync_button.icon = ft.icons.SYNC
+            self.page.snack_bar.open = True
+            self.page.update()
+
+    def build(self):
         # Cabeçalho com botão sair
         header = ft.Container(
             content=ft.Row(
@@ -296,12 +384,52 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         color=ft.colors.WHITE
                     ),
                     ft.Container(expand=True),  # Espaçador flexível
-                    ft.IconButton(
-                        icon=ft.icons.LOGOUT,
-                        icon_color=ft.colors.WHITE,
-                        tooltip="Sair",
-                        on_click=lambda _: self.sair()
-                    )
+                    # Indicador de status de conexão
+                    self.status_indicator,
+                    ft.Container(width=15),  # Espaço entre status e botões
+                    ft.Row([
+                        ft.IconButton(
+                            icon=ft.icons.SYNC,
+                            tooltip="Sincronizar Dados",
+                            on_click=self._on_sync_clicked,
+                            icon_color=ft.colors.WHITE,
+                            icon_size=20,
+                            style=ft.ButtonStyle(
+                                side=ft.border.BorderSide(1, ft.colors.WHITE),
+                                shape=ft.RoundedRectangleBorder(radius=5),
+                                padding=8,
+                                bgcolor=ft.colors.with_opacity(ft.colors.BLUE_600, 0.3)
+                            ),
+                            animate_rotation=ft.animation.Animation(300, ft.AnimationCurve.BOUNCE_OUT),
+                        ),
+                        ft.Container(width=8),  # Espaço entre os botões
+                        ft.IconButton(
+                            icon=ft.icons.LOGOUT,
+                            tooltip="Terminar Sessão",
+                            on_click=lambda e: self.terminar_sessao(),
+                            icon_color=ft.colors.WHITE,
+                            icon_size=20,
+                            style=ft.ButtonStyle(
+                                side=ft.border.BorderSide(1, ft.colors.WHITE),
+                                shape=ft.RoundedRectangleBorder(radius=5),
+                                padding=8
+                            )
+                        ),
+                        ft.Container(width=8),  # Espaço entre os botões
+                        ft.IconButton(
+                            icon=ft.icons.POWER_SETTINGS_NEW,
+                            tooltip="Sair do Sistema",
+                            on_click=lambda e: self.sair(),
+                            icon_color=ft.colors.RED_300,
+                            icon_size=20,
+                            style=ft.ButtonStyle(
+                                side=ft.border.BorderSide(1, ft.colors.RED_300),
+                                shape=ft.RoundedRectangleBorder(radius=5),
+                                padding=8,
+                                bgcolor=ft.colors.with_opacity(ft.colors.RED_900, 0.3)
+                            )
+                        )
+                    ])
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN
             ),
@@ -364,7 +492,53 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 ),
                 col={"sm": 6, "md": 3}
             ),
+            ft.Container(
+                content=ft.ElevatedButton(
+                    "Sobre",
+                    icon=ft.icons.INFO,
+                    style=ft.ButtonStyle(
+                        color=ft.colors.WHITE,
+                        bgcolor=ft.colors.TEAL_700
+                    ),
+                    on_click=lambda _: self.page.go("/sobre")
+                ),
+                col={"sm": 6, "md": 3}
+            )
         ]
+        
+        # Adicionar botão de abastecimento para usuários com permissão (admin ou pode_abastecer)
+        if self.usuario.get('is_admin') or self.usuario.get('pode_abastecer'):
+            buttons.extend([
+                ft.Container(
+                    content=ft.ElevatedButton(
+                        "Abastecimento",
+                        icon=ft.icons.LOCAL_SHIPPING,
+                        style=ft.ButtonStyle(
+                            color=ft.colors.WHITE,
+                            bgcolor=ft.colors.BLUE_800
+                        ),
+                        on_click=lambda _: self.page.go("/abastecimento")
+                    ),
+                    col={"sm": 6, "md": 3}
+                )
+            ])
+        
+        # Adicionar botão de despesas para usuários com permissão (admin ou pode_gerenciar_despesas)
+        if self.usuario.get('is_admin') or self.usuario.get('pode_gerenciar_despesas'):
+            buttons.extend([
+                ft.Container(
+                    content=ft.ElevatedButton(
+                        "Gestão de Despesas",
+                        icon=ft.icons.MONEY_OFF,
+                        style=ft.ButtonStyle(
+                            color=ft.colors.WHITE,
+                            bgcolor=ft.colors.RED
+                        ),
+                        on_click=lambda _: self.page.go("/despesas")
+                    ),
+                    col={"sm": 6, "md": 3}
+                )
+            ])
         
         if self.usuario.get('is_admin'):
             buttons.extend([
@@ -380,6 +554,9 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     ),
                     col={"sm": 6, "md": 3}
                 ),
+            ])
+            
+            buttons.extend([
                 ft.Container(
                     content=ft.ElevatedButton(
                         "Produtos",
@@ -454,18 +631,6 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 ),
                 ft.Container(
                     content=ft.ElevatedButton(
-                        "Gestão de Despesas",
-                        icon=ft.icons.MONEY_OFF,
-                        style=ft.ButtonStyle(
-                            color=ft.colors.WHITE,
-                            bgcolor=ft.colors.RED
-                        ),
-                        on_click=lambda _: self.page.go("/despesas")
-                    ),
-                    col={"sm": 6, "md": 3}
-                ),
-                ft.Container(
-                    content=ft.ElevatedButton(
                         "Gerenciar Vendas",
                         icon=ft.icons.EDIT_NOTE,
                         style=ft.ButtonStyle(
@@ -475,40 +640,25 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         on_click=lambda _: self.page.go("/gerenciar-vendas")
                     ),
                     col={"sm": 6, "md": 3}
-                ),
-                # Novo botão para Gráficos
-                ft.Container(
-                    content=ft.ElevatedButton(
-                        "Gráficos",
-                        icon=ft.icons.BAR_CHART,
-                        style=ft.ButtonStyle(
-                            color=ft.colors.WHITE,
-                            bgcolor=ft.colors.PURPLE_700
-                        ),
-                        on_click=lambda _: self.page.go("/graficos")
-                    ),
-                    col={"sm": 6, "md": 3}
                 )
             ])
 
         return ft.Container(
-            content=ft.Column(
-                controls=[
-                    header,
-                    ft.Container(height=20),
-                    ft.ResponsiveRow(
-                        controls=buttons
-                    ),
-                    ft.Container(height=20),
-                    self.get_stats_cards(),
-                    ft.Container(height=20),
-                    self.get_tables_row()
-                ],
-                scroll=ft.ScrollMode.AUTO,
-                expand=True
-            ),
-            padding=20
-        )
+                content=ft.Column(
+                    controls=[
+                        header,
+                        ft.Container(height=20),
+                        ft.ResponsiveRow(
+                            controls=buttons
+                        ),
+                        ft.Container(height=20),
+                        self.get_stats_cards()
+                    ],
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True
+                ),
+                padding=20
+            )
 
     def get_stats_cards(self):
         try:
@@ -543,11 +693,16 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 WHERE estoque <= estoque_minimo AND ativo = 1
             """)[0]
 
-            # Buscar valor total em estoque e valor potencial apenas para admin
+            # Inicializar valores padrão
+            valor_estoque = self.db.get_valor_estoque()
+            valor_potencial = self.db.get_valor_venda_estoque()
+            lucro_mes = 0.0  # Inicializa com valor padrão
+            lucro_dia = 0.0  # Inicializa com valor padrão
+            
+            # Buscar valores específicos para administradores
             if self.usuario.get('is_admin'):
-                valor_estoque = self.db.get_valor_estoque()
-                valor_potencial = self.db.get_valor_venda_estoque()
                 lucro_mes = self.db.get_lucro_mes()
+                lucro_dia = self.db.get_lucro_dia()
             
             # Cards base que todos os usuários verão
             cards = [
@@ -643,7 +798,64 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     ft.Container(
                         content=ft.Column([
                             ft.Text(
-                                self.t("profit_month"),
+                                "Lucro de Hoje",
+                                size=16,
+                                color=ft.colors.WHITE
+                            ),
+                            ft.Text(
+                                f"MT {lucro_dia:.2f}",
+                                size=20,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.colors.WHITE
+                            )
+                        ], alignment=ft.MainAxisAlignment.CENTER),
+                        gradient=ft.LinearGradient(
+                            begin=ft.alignment.top_left,
+                            end=ft.alignment.bottom_right,
+                            colors=[ft.colors.ORANGE_700, ft.colors.ORANGE_900]
+                        ),
+                        padding=25,
+                        border_radius=10,
+                        shadow=ft.BoxShadow(
+                            spread_radius=1,
+                            blur_radius=10,
+                            color=ft.colors.with_opacity(0.3, ft.colors.BLACK)
+                        ),
+                        col={"sm": 6, "md": 3}
+                    ),
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(
+                                "Lucro Potencial do Estoque",
+                                size=16,
+                                text_align=ft.TextAlign.CENTER,
+                                color=ft.colors.WHITE
+                            ),
+                            ft.Text(
+                                f"MT {self.db.get_lucro_potencial_estoque():.2f}",
+                                size=20,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.colors.WHITE
+                            )
+                        ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                        gradient=ft.LinearGradient(
+                            begin=ft.alignment.top_left,
+                            end=ft.alignment.bottom_right,
+                            colors=[ft.colors.PURPLE_700, ft.colors.PURPLE_900]
+                        ),
+                        padding=25,
+                        border_radius=10,
+                        shadow=ft.BoxShadow(
+                            spread_radius=1,
+                            blur_radius=10,
+                            color=ft.colors.with_opacity(0.3, ft.colors.BLACK)
+                        ),
+                        col={"sm": 6, "md": 3}
+                    ),
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(
+                                "Lucro do Mês",
                                 size=16,
                                 color=ft.colors.WHITE
                             ),
@@ -657,7 +869,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         gradient=ft.LinearGradient(
                             begin=ft.alignment.top_left,
                             end=ft.alignment.bottom_right,
-                            colors=[ft.colors.PURPLE_700, ft.colors.PURPLE_900]
+                            colors=[ft.colors.BLUE_700, ft.colors.BLUE_900]
                         ),
                         padding=25,
                         border_radius=10,
@@ -764,7 +976,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
             cursor.execute("""
                 SELECT v.id, v.data_venda, u.nome, v.total, v.forma_pagamento 
                 FROM vendas v
-                JOIN usuarios u ON v.usuario_id = u.id
+                JOIN usuarios u ON u.id = v.usuario_id
                 WHERE (v.status IS NULL OR v.status != 'Anulada')
                 ORDER BY v.data_venda DESC LIMIT 5
             """)
@@ -908,25 +1120,15 @@ class DashboardView(ft.UserControl, TranslationMixin):
         )
 
         # Tabela de Produtos com Estoque Baixo
-        produtos_baixo_estoque = self.db.fetchall("""
-            SELECT 
-                codigo,
-                nome,
-                estoque,
-                estoque_minimo
-            FROM produtos
-            WHERE estoque <= estoque_minimo
-                AND ativo = 1
-            ORDER BY estoque ASC
-            LIMIT 5
-        """)
+        produtos_baixo_estoque = self.get_low_stock_products(limit=5)
 
         estoque_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Código", color=ft.colors.GREY_900)),
-                ft.DataColumn(ft.Text("Produto", color=ft.colors.GREY_900)),
-                ft.DataColumn(ft.Text("Estoque", color=ft.colors.GREY_900)),
-                ft.DataColumn(ft.Text("Mínimo", color=ft.colors.GREY_900))
+                ft.DataColumn(ft.Text("Código", color=ft.colors.GREY_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Produto", color=ft.colors.GREY_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Estoque", color=ft.colors.GREY_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Mínimo", color=ft.colors.GREY_900, weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Ações", color=ft.colors.GREY_900, weight=ft.FontWeight.BOLD))
             ],
             rows=[
                 ft.DataRow(
@@ -936,13 +1138,38 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         ft.DataCell(
                             ft.Text(
                                 str(p['estoque']),
-                                color=ft.colors.RED if p['estoque'] <= p['estoque_minimo'] else ft.colors.GREY_900
+                                color=ft.colors.RED if p['estoque'] <= p['estoque_minimo'] else ft.colors.GREY_900,
+                                weight=ft.FontWeight.BOLD if p['estoque'] <= p['estoque_minimo'] else None
                             )
                         ),
-                        ft.DataCell(ft.Text(str(p['estoque_minimo']), color=ft.colors.GREY_900))
-                    ]
+                        ft.DataCell(ft.Text(str(p['estoque_minimo']), color=ft.colors.GREY_900)),
+                        ft.DataCell(
+                            ft.Row(
+                                [ft.IconButton(
+                                    icon=ft.icons.VISIBILITY,
+                                    icon_color=ft.colors.BLUE_600,
+                                    tooltip="Visualizar produto",
+                                    on_click=lambda e, p=p: self.show_edit_product_dialog(p)
+                                )],
+                                alignment=ft.MainAxisAlignment.CENTER
+                            )
+                        )
+                    ],
+                    on_select_changed=lambda e, p=p: self.show_edit_product_dialog(p)
                 ) for p in produtos_baixo_estoque
-            ]
+            ],
+            border=ft.border.all(1, ft.colors.GREY_300),
+            border_radius=5,
+            heading_row_color=ft.colors.BLUE_50,
+            heading_row_height=40,
+            data_row_min_height=40,
+            data_row_max_height=40,
+            horizontal_margin=10,
+            column_spacing=20,
+            divider_thickness=0.5,
+            show_bottom_border=True,
+            sort_column_index=2,
+            sort_ascending=True
         )
 
         # Container para as tabelas
@@ -977,25 +1204,60 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     ),
                     col={"sm": 12, "md": 12, "lg": 6}
                 ),
+                # Card de Produtos com Estoque Baixo
                 ft.Container(
-                    content=ft.Column([
-                        ft.Text(
-                            "Produtos com Estoque Baixo",
-                            size=16,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.colors.BLACK
-                        ),
-                        ft.Container(
-                            content=ft.Column(
-                                [estoque_table],
-                                scroll=ft.ScrollMode.AUTO
+                    content=ft.Column(
+                        controls=[
+                            # Cabeçalho do card com ícone de alerta e seta
+                            ft.Container(
+                                content=ft.Row(
+                                    controls=[
+                                        # Lado esquerdo: Ícone e texto
+                                        ft.Row(
+                                            controls=[
+                                                ft.Icon(ft.icons.WARNING_AMBER, color=ft.colors.AMBER),
+                                                ft.Text(
+                                                    "Produtos com Estoque Baixo",
+                                                    size=16,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=ft.colors.BLACK
+                                                ),
+                                                ft.Text(
+                                                    "🔍",
+                                                    size=20,
+                                                    color=ft.colors.RED_400,
+                                                    tooltip="Ver produtos com estoque baixo"
+                                                )
+                                            ],
+                                            spacing=5,
+                                            expand=True
+                                        ),
+                                        # Lado direito: Seta de navegação
+                                        ft.Icon(ft.icons.ARROW_FORWARD_IOS, size=16, color=ft.colors.GREY_600)
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER
+                                )
                             ),
-                            height=270,  # Mesma altura da tabela de vendas
-                            border=ft.border.all(1, ft.colors.BLACK26),
-                            border_radius=10,
-                            padding=10
-                        )
-                    ]),
+                            # Tabela de produtos
+                            ft.Container(
+                                content=ft.Column(
+                                    controls=[
+                                        ft.GestureDetector(
+                                            content=estoque_table,
+                                            on_tap=lambda e: self.handle_low_stock_click(e)
+                                        )
+                                    ],
+                                    scroll=ft.ScrollMode.AUTO
+                                ),
+                                height=270,
+                                margin=ft.margin.only(top=10),
+                                border=ft.border.all(1, ft.colors.BLACK26),
+                                border_radius=10,
+                                padding=10
+                            )
+                        ]
+                    ),
                     bgcolor=ft.colors.WHITE,
                     padding=20,
                     border_radius=10,
@@ -1004,46 +1266,392 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         blur_radius=10,
                         color=ft.colors.with_opacity(0.1, ft.colors.BLACK)
                     ),
-                    col={"sm": 12, "md": 12, "lg": 6}
+                    col={"sm": 12, "md": 12, "lg": 6},
+                    on_click=lambda e: self.handle_low_stock_click(e),
+                    on_hover=lambda e: self.handle_hover(e),
+                    ink=True,
+                    tooltip="Clique para ver e editar todos os produtos com estoque baixo"
                 )
             ]
         )
-    def sair(self):
+    def terminar_sessao(self):
+        """Termina a sessão atual e volta para a tela de login"""
         # Limpa os dados da sessão
         self.page.data.clear()
         # Volta para a tela de login
         self.page.go("/")
+        
+    def sair(self):
+        """Fecha o aplicativo"""
+        # Fecha a aplicação
+        self.page.window_destroy()
 
     def ir_para_clientes(self, e):
         self.page.go("/clientes")
 
-    def atualizar_valores(self):
-        """Atualiza os valores mostrados nos cards"""
-        print("\n=== ATUALIZANDO VALORES DO DASHBOARD ===")
-        
-        total_vendas_mes = self.db.get_total_vendas_mes()
-        lucro_mes = self.get_lucro_mes()
-        total_vendas_dia = self.db.get_total_vendas_hoje()
-        total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()
-        valor_estoque = self.db.get_valor_estoque()
-        valor_potencial = self.db.get_valor_venda_estoque()
+    def ir_para_compras_dia(self, e):
+        print("Clicou em Compras do Dia")
+        self.page.go("/compras-dia")
 
-        print(f"Total vendas mês: MT {total_vendas_mes:.2f}")
-        print(f"Lucro mês: MT {lucro_mes:.2f}")
+    def atualizar_valores(self, resetar=False):
+        """Atualiza os valores mostrados nos cards
+        
+        Args:
+            resetar (bool, optional): Se True, zera os valores para funcionários. Defaults to False.
+        """
+        print("\n=== ATUALIZANDO VALORES DO DASHBOARD ===")
+        print(f"Usuário: {self.usuario.get('nome', 'N/A')} (Admin: {self.usuario.get('is_admin', False)})")
+        print(f"Resetar valores: {resetar}")
+        print("Chamando métodos do banco de dados...")
+        
+        # Valores básicos para todos os usuários
+        # Se for funcionário e resetar=True, zerar os valores
+        if not self.usuario.get('is_admin') and resetar:
+            total_vendas_mes = 0.0
+            total_vendas_dia = 0.0
+            total_vendas_congelador = 0.0
+            valor_estoque = self.db.get_valor_estoque()  # Manter valor do estoque
+            valor_potencial = self.db.get_valor_venda_estoque()  # Manter valor potencial
+            lucro_mes = 0.0
+            lucro_dia = 0.0
+        else:
+            # Usar os novos métodos que consideram os saques
+            total_vendas_mes = self.db.get_vendas_disponiveis_mes()  # Vendas menos saques
+            total_vendas_dia = self.db.get_total_vendas_hoje()
+            total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()
+            valor_estoque = self.db.get_valor_estoque()
+            valor_potencial = self.db.get_valor_venda_estoque()
+            
+            # Valores padrão para lucros
+            lucro_mes = 0.0
+            lucro_dia = 0.0
+            
+            # Obter valores específicos para administradores
+            if self.usuario.get('is_admin'):
+                lucro_mes = self.db.get_lucro_disponivel_mes()  # Lucro menos saques
+                lucro_dia = self.db.get_lucro_dia()
+
+        print(f"Total vendas mês (disponível): MT {total_vendas_mes:.2f}")
+        print(f"Lucro mês (disponível): MT {lucro_mes:.2f}")
         print(f"Total vendas dia: MT {total_vendas_dia:.2f}")
+        print(f"Lucro dia: MT {lucro_dia:.2f}")
         print(f"Vendas congelador: MT {total_vendas_congelador:.2f}")
         print(f"Valor em estoque: MT {valor_estoque:.2f}")
         print(f"Valor potencial: MT {valor_potencial:.2f}")
 
-        self.vendas_mes.value = f"MT {total_vendas_mes:.2f}"
-        self.lucro_mes.value = f"MT {lucro_mes:.2f}"
-        self.vendas_dia.value = f"MT {total_vendas_dia:.2f}"
-        self.vendas_congelador.value = f"MT {total_vendas_congelador:.2f}"
-        self.valor_estoque.value = f"MT {valor_estoque:.2f}"
-        self.valor_potencial.value = f"MT {valor_potencial:.2f}"
+        # Verificar se os objetos de texto existem antes de atualizá-los
+        if hasattr(self, 'vendas_mes') and self.vendas_mes:
+            self.vendas_mes.value = f"MT {total_vendas_mes:.2f}"
+        if hasattr(self, 'vendas_dia') and self.vendas_dia:
+            self.vendas_dia.value = f"MT {total_vendas_dia:.2f}"
+        if hasattr(self, 'vendas_congelador') and self.vendas_congelador:
+            self.vendas_congelador.value = f"MT {total_vendas_congelador:.2f}"
+        if hasattr(self, 'valor_estoque') and self.valor_estoque:
+            self.valor_estoque.value = f"MT {valor_estoque:.2f}"
+        if hasattr(self, 'valor_potencial') and self.valor_potencial:
+            self.valor_potencial.value = f"MT {valor_potencial:.2f}"
+        if hasattr(self, 'lucro_mes') and self.lucro_mes:
+            self.lucro_mes.value = f"MT {lucro_mes:.2f}"
+        if hasattr(self, 'lucro_dia') and self.lucro_dia:
+            self.lucro_dia.value = f"MT {lucro_dia:.2f}"
 
-        self.update()
-        print("=== VALORES DO DASHBOARD ATUALIZADOS ===\n")
+        try:
+            # Forçar atualização da UI de múltiplas formas
+            print("Forçando atualização da UI...")
+            
+            # 1. Forçar reconstrução dos cards primeiro
+            self._force_rebuild_cards(resetar=resetar)
+            
+            # 2. Atualizar o controle
+            self.update()
+            
+            # 3. Atualizar a página
+            if hasattr(self, 'page') and self.page:
+                self.page.update()
+            
+            # 4. Forçar atualização adicional após um pequeno delay
+            if hasattr(self, 'page') and self.page:
+                # Tentar forçar uma atualização adicional
+                try:
+                    self.page.update()
+                except:
+                    pass
+            
+            print("=== VALORES DO DASHBOARD ATUALIZADOS ===\n")
+        except Exception as e:
+            print(f"Erro ao atualizar dashboard: {e}")
+            # Tentar atualizar a página se o controle não estiver na página
+            try:
+                if hasattr(self, 'page') and self.page:
+                    self.page.update()
+            except Exception as e2:
+                print(f"Erro ao atualizar página: {e2}")
+
+    def get_low_stock_products(self, limit: int = None) -> List[Dict[str, Any]]:
+        """Retorna a lista de produtos com estoque baixo"""
+        query = """
+            SELECT 
+                id,
+                codigo,
+                nome,
+                estoque,
+                estoque_minimo,
+                preco_venda
+            FROM produtos
+            WHERE estoque <= estoque_minimo
+                AND ativo = 1
+            ORDER BY estoque ASC
+        """
+        if limit:
+            query += f" LIMIT {limit}"
+            
+        return self.db.fetchall(query)
+
+    def show_edit_product_dialog(self, product: Dict[str, Any]):
+        """Mostra um diálogo para editar um produto"""
+        def save_changes(e):
+            try:
+                new_stock = int(estoque_field.value)
+                new_min_stock = int(estoque_minimo_field.value)
+                
+                self.db.execute(
+                    "UPDATE produtos SET estoque = ?, estoque_minimo = ? WHERE id = ?",
+                    (new_stock, new_min_stock, product['id'])
+                )
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Produto atualizado com sucesso!"),
+                    bgcolor=ft.colors.GREEN
+                )
+                self.page.snack_bar.open = True
+                self.page.dialog.open = False
+                self.page.update()
+                self.atualizar_valores()
+            except ValueError:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Por favor, insira valores numéricos válidos"),
+                    bgcolor=ft.colors.RED
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        # Campos do formulário
+        estoque_field = ft.TextField(
+            label="Estoque Atual",
+            value=str(product['estoque']),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        estoque_minimo_field = ft.TextField(
+            label="Estoque Mínimo",
+            value=str(product['estoque_minimo']),
+            keyboard_type=ft.KeyboardType.NUMBER,
+            width=200
+        )
+        
+        dlg = ft.AlertDialog(
+            title=ft.Text(f"Editar {product['nome']}"),
+            content=ft.Column(
+                [
+                    ft.Text(f"Código: {product['codigo']}"),
+                    ft.Text(f"Preço: MT {product['preco_venda']:.2f}"),
+                    ft.Divider(),
+                    estoque_field,
+                    estoque_minimo_field
+                ],
+                tight=True
+            ),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda e: setattr(dlg, 'open', False) or self.page.update()),
+                ft.TextButton("Salvar", on_click=save_changes),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.dialog = dlg
+        dlg.open = True
+        self.page.update()
+
+    def handle_low_stock_click(self, e):
+        """Manipula o clique no card de estoque baixo"""
+        print("DEBUG: handle_low_stock_click chamado")
+        print(f"DEBUG: Evento: {e}")
+        print(f"DEBUG: Página: {self.page}")
+        print(f"DEBUG: Controles: {e.control}")
+        self.show_all_low_stock_products(e)
+        
+    def handle_hover(self, e):
+        """Muda a cor do card ao passar o mouse"""
+        e.control.bgcolor = ft.colors.BLUE_GREY_50 if e.data == "true" else ft.colors.WHITE
+        e.control.update()
+        
+    def show_all_low_stock_products(self, e=None):
+        """Mostra todos os produtos com estoque baixo em uma nova página"""
+        print("DEBUG: show_all_low_stock_products chamado")
+        print(f"DEBUG: Evento recebido: {e}")
+        
+        # Força o foco para garantir que o evento de clique seja processado
+        if e and hasattr(e, 'control'):
+            e.control.focus()
+            
+        try:
+            produtos = self.get_low_stock_products()
+            print(f"DEBUG: {len(produtos)} produtos com estoque baixo encontrados")
+            
+            # Mostra uma mensagem de sucesso para confirmar que o clique foi registrado
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Mostrando {len(produtos)} produtos com estoque baixo"),
+                action="OK"
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            
+        except Exception as ex:
+            print(f"ERRO ao obter produtos com estoque baixo: {str(ex)}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Erro ao carregar produtos: {str(ex)}"),
+                bgcolor=ft.colors.RED
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        
+        def create_product_row(p):
+            estoque_field = ft.TextField(
+                value=str(p['estoque']),
+                width=100,
+                text_align=ft.TextAlign.RIGHT,
+                keyboard_type=ft.KeyboardType.NUMBER
+            )
+            
+            estoque_minimo_field = ft.TextField(
+                value=str(p['estoque_minimo']),
+                width=100,
+                text_align=ft.TextAlign.RIGHT,
+                keyboard_type=ft.KeyboardType.NUMBER
+            )
+            
+            def save_product(e):
+                try:
+                    new_stock = int(estoque_field.value)
+                    new_min_stock = int(estoque_minimo_field.value)
+                    
+                    self.db.execute(
+                        "UPDATE produtos SET estoque = ?, estoque_minimo = ? WHERE id = ?",
+                        (new_stock, new_min_stock, p['id'])
+                    )
+                    
+                    # Atualiza a interface
+                    estoque_field.border_color = ft.colors.GREEN
+                    estoque_field.update()
+                    
+                    # Mostra mensagem de sucesso
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"{p['nome']} atualizado com sucesso!"),
+                        bgcolor=ft.colors.GREEN
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    
+                except ValueError:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("Por favor, insira valores numéricos válidos"),
+                        bgcolor=ft.colors.RED
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            
+            return ft.DataRow(
+                cells=[
+                    ft.DataCell(ft.Text(p['codigo'])),
+                    ft.DataCell(ft.Text(p['nome'])),
+                    ft.DataCell(estoque_field),
+                    ft.DataCell(estoque_minimo_field),
+                    ft.DataCell(
+                        ft.Row(
+                            [
+                                ft.IconButton(
+                                    icon=ft.icons.VISIBILITY,
+                                    icon_color=ft.colors.BLUE_600,
+                                    tooltip="Visualizar produto",
+                                    on_click=lambda e, p=p: self.show_edit_product_dialog(p)
+                                ),
+                                ft.ElevatedButton(
+                                    "Atualizar",
+                                    on_click=save_product,
+                                    style=ft.ButtonStyle(
+                                        padding=ft.padding.symmetric(horizontal=10, vertical=5),
+                                        bgcolor=ft.colors.BLUE_50,
+                                        color=ft.colors.BLUE_700
+                                    )
+                                )
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=5
+                        )
+                    )
+                ]
+            )
+        
+        # Cria a tabela de produtos
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Código", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Produto", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Estoque Atual", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Estoque Mínimo", weight=ft.FontWeight.BOLD)),
+                ft.DataColumn(ft.Text("Ações", weight=ft.FontWeight.BOLD)),
+            ],
+            rows=[create_product_row(p) for p in produtos],
+            border=ft.border.all(1, ft.colors.GREY_300),
+            border_radius=5,
+            heading_row_color=ft.colors.BLUE_50,
+            heading_row_height=40,
+            data_row_min_height=50,
+            horizontal_margin=10,
+            column_spacing=20,
+            divider_thickness=0.5,
+            show_bottom_border=True,
+        )
+        
+        # Cria o diálogo
+        dlg = ft.AlertDialog(
+            title=ft.Row(
+                [
+                    ft.Icon(ft.icons.WARNING_AMBER, color=ft.colors.AMBER),
+                    ft.Text("Produtos com Estoque Baixo", weight=ft.FontWeight.BOLD),
+                ],
+                spacing=10,
+                alignment=ft.MainAxisAlignment.CENTER
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(f"Total de produtos com estoque baixo: {len(produtos)}", 
+                              weight=ft.FontWeight.W_500),
+                        ft.Divider(),
+                        ft.Container(
+                            content=ft.Column([table], scroll=ft.ScrollMode.AUTO),
+                            height=400,
+                            width=800,
+                        )
+                    ],
+                    spacing=15,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Fechar", 
+                    on_click=lambda e: setattr(dlg, 'open', False) or self.page.update(),
+                    style=ft.ButtonStyle(padding=ft.padding.symmetric(horizontal=20, vertical=10))
+                )
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=10),
+        )
+        
+        self.page.dialog = dlg
+        dlg.open = True
+        self.page.update()
 
     def corrigir_estoque(self, e):
         """Corrige o estoque de vendas anuladas de dívidas quitadas"""
@@ -1119,8 +1727,279 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 )
             )
 
+    def sincronizar_dados_sync(self):
+        """Versão síncrona do método de sincronização de dados"""
+        try:
+            # Usar o novo SyncManager
+            import asyncio
+            from repositories.sync_manager import SyncManager
+            
+            print("=== INICIANDO SINCRONIZAÇÃO DE DADOS ===")
+            
+            # Executar a sincronização de forma síncrona
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            sync_manager = SyncManager()
+            result = loop.run_until_complete(sync_manager.sincronizar_todas_entidades())
+            loop.close()
+            
+            # Imprimir resumo da sincronização
+            print("\n=== RESUMO DA SINCRONIZAÇÃO ===")
+            print(f"Status: {result['status']}")
+            print(f"Total enviadas: {result['total_enviadas']}")
+            print(f"Total recebidas: {result['total_recebidas']}")
+            print(f"Duração: {result['duracao_segundos']:.2f} segundos")
+            print(f"Mensagem: {result['message']}")
+            print("=== FIM DO RESUMO ===\n")
+            
+            # Atualizar valores do dashboard
+            print("=== INÍCIO ATUALIZAÇÃO DASHBOARD ===")
+            self.atualizar_valores(resetar=False)
+            print("Valores atualizados do banco de dados")
+            
+            # Reconstruir os cards
+            print("Atualizando UI após reconstrução dos cards...")
+            self._force_rebuild_cards(resetar=False)
+            print("Reconstrução dos cards concluída com sucesso")
+            
+            # Verificar produtos com estoque baixo
+            produtos_baixo_estoque = self.get_low_stock_products()
+            print(f"Produtos com estoque baixo: {len(produtos_baixo_estoque)}")
+            
+            # Manter um print para a mensagem final que aparece na UI
+            print("Sincronização concluída com sucesso!")
+            return True
+        except Exception as ex:
+            # Usar logger para registrar o erro
+            logger.error(f"Erro na sincronização: {ex}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Manter print para a UI
+            print(f"Erro na sincronização: {ex}")
+            return False
+    
+    def _on_sync_clicked(self, e):
+        """Manipulador de clique do botão de sincronização para Flet 0.9.0"""
+        # Armazenar referência do controle
+        control = e.control
+        
+        # Função para atualizar a UI (síncrona)
+        def update_ui(icon=None, disabled=False, content=None):
+            control.icon = icon
+            control.content = content
+            control.disabled = disabled
+            control.update()
+        
+        # Desabilitar o botão durante a sincronização, mas manter o ícone
+        update_ui(icon=ft.icons.SYNC, disabled=True, content=None)
+        
+        # Função para executar a sincronização híbrida
+        def sync_task():
+            try:
+                # Usar o repositório híbrido para sincronização
+                from repositories.sync_manager import SyncManager
+                import asyncio
+                
+                async def sync_hibrido():
+                    sync_manager = SyncManager()
+                    
+                    # Verificar status da conexão
+                    is_online = await sync_manager.is_backend_online()
+                    
+                    if is_online:
+                        # Sincronizar todas as entidades
+                        resultado = await sync_manager.sincronizar_todas_entidades()
+                        return resultado
+                    else:
+                        return {"status": "offline", "message": "Backend offline - operando localmente"}
+                
+                # Executar sincronização
+                resultado = asyncio.run(sync_hibrido())
+                
+                # Mostrar mensagem baseada no resultado
+                if resultado.get("status") == "success":
+                    enviadas = resultado.get("total_enviadas", 0)
+                    recebidas = resultado.get("total_recebidas", 0)
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            ft.Text(f"✅ Sincronização completa! Enviadas: {enviadas}, Recebidas: {recebidas}", color=ft.colors.WHITE),
+                            bgcolor=ft.colors.GREEN_700,
+                            duration=3000,
+                        )
+                    )
+                elif resultado.get("status") == "offline":
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            ft.Text("🔴 Backend offline - Sistema funcionando localmente", color=ft.colors.WHITE),
+                            bgcolor=ft.colors.ORANGE_700,
+                            duration=3000,
+                        )
+                    )
+                else:
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            ft.Text("❌ Erro na sincronização. Verifique o console.", color=ft.colors.WHITE),
+                            bgcolor=ft.colors.RED_700,
+                            duration=5000,
+                        )
+                    )
+                
+            except Exception as ex:
+                # Mostrar mensagem de erro
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        ft.Text(f"Erro na sincronização: {str(ex)}", color=ft.colors.WHITE),
+                        bgcolor=ft.colors.RED_700,
+                        duration=5000,
+                    )
+                )
+                print(f"Erro na sincronização: {ex}")
+                
+            finally:
+                # Restaurar estado do botão
+                if control.page:  # Verificar se a página ainda existe
+                    update_ui(icon=ft.icons.SYNC, disabled=False, content=None)
+        
+        # Executar a tarefa em uma thread separada
+        import threading
+        threading.Thread(target=sync_task).start()
+
+    def _force_rebuild_cards(self, resetar=False):
+        """Força a reconstrução dos cards do dashboard
+        
+        Args:
+            resetar (bool, optional): Se True, zera os valores para funcionários. Defaults to False.
+        """
+        try:
+            print("Forçando reconstrução dos cards...")
+            print(f"Resetar valores: {resetar}")
+            
+            # Inicializar valores
+            if not self.usuario.get('is_admin') and resetar:
+                # Se for funcionário e resetar=True, zerar os valores
+                total_vendas_mes = 0.0
+                total_vendas_dia = 0.0
+                total_vendas_congelador = 0.0
+                valor_estoque = self.db.get_valor_estoque()  # Manter valor do estoque
+                valor_potencial = self.db.get_valor_venda_estoque()  # Manter valor potencial
+                lucro_mes = 0.0
+                lucro_dia = 0.0
+                print("Valores zerados para funcionário")
+            else:
+                # Caso contrário, buscar valores atualizados
+                total_vendas_mes = self.db.get_vendas_disponiveis_mes()
+                total_vendas_dia = self.db.get_total_vendas_hoje()
+                total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()
+                valor_estoque = self.db.get_valor_estoque()
+                valor_potencial = self.db.get_valor_venda_estoque()
+                lucro_mes = self.db.get_lucro_mes() if self.usuario.get('is_admin') else 0.0
+                lucro_dia = self.db.get_lucro_dia() if self.usuario.get('is_admin') else 0.0
+                print("Valores atualizados do banco de dados")
+            
+            # Recriar os Text objects com novos valores
+            self.vendas_mes = ft.Text(
+                value=f"MT {total_vendas_mes:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            self.vendas_dia = ft.Text(
+                value=f"MT {total_vendas_dia:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            self.vendas_congelador = ft.Text(
+                value=f"MT {total_vendas_congelador:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            self.valor_estoque = ft.Text(
+                value=f"MT {valor_estoque:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            self.valor_potencial = ft.Text(
+                value=f"MT {valor_potencial:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            self.lucro_mes = ft.Text(
+                value=f"MT {lucro_mes:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            self.lucro_dia = ft.Text(
+                value=f"MT {lucro_dia:.2f}",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ft.colors.BLACK
+            )
+            
+            # Forçar atualização da UI
+            print("Atualizando UI após reconstrução dos cards...")
+            self.update()
+            if hasattr(self, 'page') and self.page:
+                self.page.update()
+            
+            print("Reconstrução dos cards concluída com sucesso")
+        except Exception as e:
+            print(f"Erro ao reconstruir cards: {e}")
+
     def did_mount(self):
         print("\n=== Debug did_mount() ===")
-        self.atualizar_valores()
-        print("=== Fim did_mount() ===\n")
-
+        try:
+            # Verificar se precisa resetar os valores para funcionários
+            resetar = self.page.data.get('reset_dashboard_values', False)
+            print(f"Verificando reset_dashboard_values: {resetar}")
+            
+            # Se houver flag de reset, forçar reconstrução dos cards
+            if resetar:
+                print("Flag de reset encontrada - reconstruindo cards...")
+                self._force_rebuild_cards(resetar=True)
+                # Remover a flag após processar
+                self.page.data.pop('reset_dashboard_values', None)
+                # Forçar atualização da UI
+                self.update()
+                if hasattr(self, 'page') and self.page:
+                    self.page.update()
+                return
+            
+            # Verificar se o dashboard precisa ser atualizado
+            if hasattr(self.page, 'data') and self.page.data.get('dashboard_needs_update'):
+                print("Dashboard marcado para atualização - recalculando valores...")
+                self.page.data['dashboard_needs_update'] = False  # Resetar flag
+                
+                # Forçar reconstrução completa dos cards
+                self._force_rebuild_cards(resetar=False)
+                
+                # Forçar atualização da UI
+                self.update()
+                if hasattr(self, 'page') and self.page:
+                    self.page.update()
+            
+            # Atualizar valores com a flag de reset
+            self.atualizar_valores(resetar=resetar)
+            
+            # Limpar flag de reset se existir
+            if 'reset_dashboard_values' in self.page.data:
+                print("Removendo flag reset_dashboard_values")
+                del self.page.data['reset_dashboard_values']
+                
+            print("=== Fim did_mount() ===\n")
+            
+            # Iniciar monitoramento de conexão
+            self.status_indicator.start_monitoring()
+            
+        except Exception as e:
+            print(f"Erro no did_mount: {e}")

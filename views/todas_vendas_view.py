@@ -51,6 +51,18 @@ class TodasVendasView(ft.UserControl):
         )
         self.usuario_dropdown.value = "todos"
         
+        # Campo de busca de produtos
+        self.busca_produto = ft.TextField(
+            label="Buscar produto",
+            hint_text="Digite o nome do produto...",
+            width=300,
+            expand=True,
+            border_color=ft.colors.BLUE_GREY_300,
+            label_style=ft.TextStyle(color=ft.colors.BLUE_GREY_700),
+            on_change=self.filtrar_por_produto
+        )
+        self.vendas_originais = []  # Armazenará os dados originais para filtragem
+        
         # Tabela de vendas
         self.vendas_table = ft.DataTable(
             columns=[
@@ -67,6 +79,23 @@ class TodasVendasView(ft.UserControl):
         
         # Carregar vendas iniciais
         self.carregar_vendas()
+
+    def filtrar_por_produto(self, e):
+        termo_busca = self.busca_produto.value.lower()
+        
+        if not termo_busca:
+            # Se o campo de busca estiver vazio, mostra todas as vendas
+            self.vendas_table.rows = self.vendas_originais
+        else:
+            # Filtra as linhas que contêm o termo de busca na coluna de itens
+            linhas_filtradas = []
+            for row in self.vendas_originais:
+                itens = row.cells[5].content.value.lower()  # Índice 5 é a coluna de Itens
+                if termo_busca in itens:
+                    linhas_filtradas.append(row)
+            self.vendas_table.rows = linhas_filtradas
+        
+        self.vendas_table.update()
 
     def carregar_vendas(self, e=None):
         try:
@@ -108,22 +137,24 @@ class TodasVendasView(ft.UserControl):
                     totais_vendedor[v['vendedor']] = 0
                 totais_vendedor[v['vendedor']] += v['total']
 
-            # Atualizar tabela
+            # Armazenar os dados originais e limpar a tabela
             self.vendas_table.rows.clear()
+            self.vendas_originais = []
+            
             for v in vendas:
                 cor = ft.colors.RED if v['status'] == 'Fechada' else ft.colors.GREY_900
-                self.vendas_table.rows.append(
-                    ft.DataRow(
-                        cells=[
-                            ft.DataCell(ft.Text(str(v['id']), color=cor)),
-                            ft.DataCell(ft.Text(v['vendedor'], color=cor)),
-                            ft.DataCell(ft.Text(f"{v['data']} {v['hora']}", color=cor)),
-                            ft.DataCell(ft.Text(f"MT {v['total']:.2f}", color=cor)),
-                            ft.DataCell(ft.Text(v['forma_pagamento'], color=cor)),
-                            ft.DataCell(ft.Text(v['itens'], color=cor))
-                        ]
-                    )
+                row = ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(str(v['id']), color=cor)),
+                        ft.DataCell(ft.Text(v['vendedor'], color=cor)),
+                        ft.DataCell(ft.Text(f"{v['data']} {v['hora']}", color=cor)),
+                        ft.DataCell(ft.Text(f"MT {v['total']:.2f}", color=cor)),
+                        ft.DataCell(ft.Text(v['forma_pagamento'], color=cor)),
+                        ft.DataCell(ft.Text(v['itens'], color=cor))
+                    ]
                 )
+                self.vendas_table.rows.append(row)
+                self.vendas_originais.append(row)
 
             # Atualizar resumo
             resumo = ["Resumo por Vendedor:"]
@@ -190,12 +221,17 @@ class TodasVendasView(ft.UserControl):
         # Container da tabela
         table_container = ft.Container(
             content=ft.Column([
-                ft.Text(
-                    "Todas as Vendas",
-                    size=16,
-                    weight=ft.FontWeight.BOLD,
-                    color=ft.colors.BLUE
-                ),
+                ft.Row([
+                    ft.Text(
+                        "Todas as Vendas",
+                        size=16,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.colors.BLUE,
+                        expand=True
+                    ),
+                    self.busca_produto
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(height=10),
                 ft.Container(
                     content=ft.Column(
                         [self.vendas_table],

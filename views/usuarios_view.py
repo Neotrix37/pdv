@@ -1,5 +1,6 @@
 import flet as ft
 from database.database import Database
+from repositories.usuario_repository import UsuarioRepository
 from werkzeug.security import generate_password_hash
 from views.generic_table_style import apply_table_style
 
@@ -10,6 +11,7 @@ class UsuariosView(ft.UserControl):
         self.page.bgcolor = ft.colors.WHITE
         self.usuario = usuario
         self.db = Database()
+        self.usuario_repo = UsuarioRepository()
         
         # Campos do formulário
         self.nome_field = ft.TextField(
@@ -53,6 +55,16 @@ class UsuariosView(ft.UserControl):
             value=False,
         )
         
+        self.pode_abastecer_switch = ft.Switch(
+            label="Pode Abastecer Produtos",
+            value=False,
+        )
+        
+        self.pode_gerenciar_despesas_switch = ft.Switch(
+            label="Pode Gerenciar Despesas",
+            value=False,
+        )
+        
         # ID do usuário em edição
         self.usuario_em_edicao = None
         
@@ -62,6 +74,8 @@ class UsuariosView(ft.UserControl):
                 ft.DataColumn(ft.Text("Nome")),
                 ft.DataColumn(ft.Text("Usuário")),
                 ft.DataColumn(ft.Text("Admin")),
+                ft.DataColumn(ft.Text("Abastecimento")),
+                ft.DataColumn(ft.Text("Despesas")),
                 ft.DataColumn(ft.Text("Status")),
                 ft.DataColumn(ft.Text("Salário")),
                 ft.DataColumn(ft.Text("Ações")),
@@ -114,7 +128,9 @@ class UsuariosView(ft.UserControl):
                 ft.Row([
                     self.senha_field,
                     self.salario_field,
-                    self.is_admin_switch
+                    self.is_admin_switch,
+                    self.pode_abastecer_switch,
+                    self.pode_gerenciar_despesas_switch
                 ]),
                 ft.Row([
                     ft.ElevatedButton(
@@ -196,11 +212,7 @@ class UsuariosView(ft.UserControl):
 
     def carregar_usuarios(self):
         try:
-            usuarios = self.db.fetchall("""
-                SELECT id, nome, usuario, is_admin, ativo, salario 
-                FROM usuarios 
-                ORDER BY nome
-            """)
+            usuarios = self.usuario_repo.listar_todos()
             
             self.table.rows.clear()
             for usuario in usuarios:
@@ -214,6 +226,13 @@ class UsuariosView(ft.UserControl):
                             tooltip="Editar",
                             data=dict(usuario),  # Convertendo Row para dict
                             on_click=self.editar_usuario
+                        ),
+                        ft.IconButton(
+                            icon=ft.icons.DELETE,
+                            icon_color=ft.colors.RED,
+                            tooltip="Excluir",
+                            data=dict(usuario),  # Convertendo Row para dict
+                            on_click=self.excluir_usuario
                         ),
                         ft.IconButton(
                             icon=ft.icons.POWER_SETTINGS_NEW,
@@ -233,6 +252,18 @@ class UsuariosView(ft.UserControl):
                                 ft.Icon(
                                     name=ft.icons.CHECK_CIRCLE if usuario['is_admin'] else ft.icons.CANCEL,
                                     color=ft.colors.GREEN if usuario['is_admin'] else ft.colors.RED
+                                )
+                            ),
+                            ft.DataCell(
+                                ft.Icon(
+                                    name=ft.icons.CHECK_CIRCLE if usuario['pode_abastecer'] else ft.icons.CANCEL,
+                                    color=ft.colors.GREEN if usuario['pode_abastecer'] else ft.colors.RED
+                                )
+                            ),
+                            ft.DataCell(
+                                ft.Icon(
+                                    name=ft.icons.CHECK_CIRCLE if (usuario['pode_gerenciar_despesas'] if 'pode_gerenciar_despesas' in usuario.keys() else 0) else ft.icons.CANCEL,
+                                    color=ft.colors.GREEN if (usuario['pode_gerenciar_despesas'] if 'pode_gerenciar_despesas' in usuario.keys() else 0) else ft.colors.RED
                                 )
                             ),
                             ft.DataCell(
@@ -265,6 +296,8 @@ class UsuariosView(ft.UserControl):
                 'nome': self.nome_field.value,
                 'usuario': self.usuario_field.value,
                 'is_admin': self.is_admin_switch.value,
+                'pode_abastecer': self.pode_abastecer_switch.value,
+                'pode_gerenciar_despesas': self.pode_gerenciar_despesas_switch.value,
                 'salario': salario
             }
             
@@ -273,17 +306,9 @@ class UsuariosView(ft.UserControl):
                 if self.senha_field.value:  # Se uma nova senha foi fornecida
                     dados['senha'] = generate_password_hash(self.senha_field.value)
                 
-                self.db.execute("""
-                    UPDATE usuarios 
-                    SET nome = :nome, 
-                        usuario = :usuario, 
-                        is_admin = :is_admin,
-                        salario = :salario
-                        {senha_update}
-                    WHERE id = :id
-                """.format(
-                    senha_update=", senha = :senha" if self.senha_field.value else ""
-                ), {**dados, 'id': self.usuario_em_edicao})
+                resultado = self.usuario_repo.update(self.usuario_em_edicao, dados)
+                if not resultado:
+                    raise Exception("Falha ao atualizar usuário")
                 
             else:
                 # Inserir novo usuário
@@ -291,10 +316,9 @@ class UsuariosView(ft.UserControl):
                     raise ValueError("Senha é obrigatória para novo usuário!")
                 
                 dados['senha'] = generate_password_hash(self.senha_field.value)
-                self.db.execute("""
-                    INSERT INTO usuarios (nome, usuario, senha, is_admin, salario)
-                    VALUES (:nome, :usuario, :senha, :is_admin, :salario)
-                """, dados)
+                resultado = self.usuario_repo.create(dados)
+                if not resultado:
+                    raise Exception("Falha ao criar usuário")
             
             # Limpar formulário e recarregar lista
             self.limpar_formulario(None)
@@ -326,20 +350,82 @@ class UsuariosView(ft.UserControl):
             self.usuario_field.value = usuario['usuario']
             self.senha_field.value = ""  # Limpa o campo de senha
             self.is_admin_switch.value = bool(usuario['is_admin'])
+            self.pode_abastecer_switch.value = bool(usuario['pode_abastecer'])
+            self.pode_gerenciar_despesas_switch.value = bool(usuario['pode_gerenciar_despesas'] if 'pode_gerenciar_despesas' in usuario.keys() else 0)
             # Trata o campo salário com valor padrão caso seja None
             self.salario_field.value = str(usuario['salario'] if usuario['salario'] is not None else 0)
             self.update()
         except Exception as error:
             print(f"Erro ao editar usuário: {error}")
 
+    def excluir_usuario(self, e):
+        usuario = e.control.data
+        
+        # Proteger o usuário admin principal
+        if usuario['usuario'] == 'admin':
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text("❌ Não é possível excluir o usuário administrador principal!"),
+                    bgcolor=ft.colors.RED,
+                    duration=3000
+                )
+            )
+            return
+        
+        self.page.dialog = ft.AlertDialog(
+            title=ft.Text("Confirmar Exclusão"),
+            content=ft.Text(f"Tem certeza que deseja excluir o usuário '{usuario['nome']}'?\n\nEsta ação não pode ser desfeita."),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _: setattr(self.page.dialog, 'open', False) or self.page.update()),
+                ft.TextButton("Excluir", on_click=lambda _: self._confirmar_exclusao(usuario['id']))
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=lambda _: setattr(self.page.dialog, 'open', False) or self.page.update()
+        )
+        self.page.dialog.open = True
+        self.page.update()
+
+    def _confirmar_exclusao(self, usuario_id):
+        try:
+            resultado = self.usuario_repo.delete(usuario_id)
+            if not resultado:
+                raise Exception("Falha ao excluir usuário")
+            self.carregar_usuarios()
+            
+            # Fechar o modal
+            self.page.dialog.open = False
+            self.page.update()
+            
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text("✅ Usuário excluído com sucesso!"),
+                    bgcolor=ft.colors.GREEN,
+                    duration=3000
+                )
+            )
+        except Exception as e:
+            print(f"Erro ao excluir usuário: {e}")
+            
+            # Fechar o modal mesmo em caso de erro
+            self.page.dialog.open = False
+            self.page.update()
+            
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text("❌ Erro ao excluir usuário!"),
+                    bgcolor=ft.colors.RED,
+                    duration=3000
+                )
+            )
+
     def toggle_status_usuario(self, e):
         usuario = e.control.data
         try:
             novo_status = not usuario['ativo']
-            self.db.execute(
-                "UPDATE usuarios SET ativo = ? WHERE id = ?",
-                (novo_status, usuario['id'])
-            )
+            dados_atualizacao = {'ativo': novo_status}
+            resultado = self.usuario_repo.update(usuario['id'], dados_atualizacao)
+            if not resultado:
+                raise Exception("Falha ao alterar status do usuário")
             self.carregar_usuarios()
             status_texto = "ativado" if novo_status else "desativado"
             self.page.show_snack_bar(
@@ -366,16 +452,18 @@ class UsuariosView(ft.UserControl):
         self.senha_field.value = ""
         self.salario_field.value = ""
         self.is_admin_switch.value = False
+        self.pode_abastecer_switch.value = False
+        self.pode_gerenciar_despesas_switch.value = False
         self.update()
 
     def filtrar_usuarios(self, e):
         termo = e.control.value.lower()
         try:
-            usuarios = self.db.fetchall("""
-                SELECT * FROM usuarios 
-                WHERE LOWER(nome) LIKE ? OR LOWER(usuario) LIKE ?
-                ORDER BY nome
-            """, (f"%{termo}%", f"%{termo}%"))
+            # Usar o repositório para buscar usuários
+            if termo:
+                usuarios = self.usuario_repo.buscar_por_nome_ou_usuario(termo)
+            else:
+                usuarios = self.usuario_repo.listar_todos()
             
             self.table.rows.clear()
             for usuario in usuarios:
@@ -389,6 +477,13 @@ class UsuariosView(ft.UserControl):
                             tooltip="Editar",
                             data=usuario,
                             on_click=self.editar_usuario
+                        ),
+                        ft.IconButton(
+                            icon=ft.icons.DELETE,
+                            icon_color=ft.colors.RED,
+                            tooltip="Excluir",
+                            data=usuario,
+                            on_click=self.excluir_usuario
                         ),
                         ft.IconButton(
                             icon=ft.icons.POWER_SETTINGS_NEW,
@@ -408,6 +503,12 @@ class UsuariosView(ft.UserControl):
                                 ft.Icon(
                                     name=ft.icons.CHECK_CIRCLE if usuario['is_admin'] else ft.icons.CANCEL,
                                     color=ft.colors.GREEN if usuario['is_admin'] else ft.colors.RED
+                                )
+                            ),
+                            ft.DataCell(
+                                ft.Icon(
+                                    name=ft.icons.CHECK_CIRCLE if usuario['pode_abastecer'] else ft.icons.CANCEL,
+                                    color=ft.colors.GREEN if usuario['pode_abastecer'] else ft.colors.RED
                                 )
                             ),
                             ft.DataCell(

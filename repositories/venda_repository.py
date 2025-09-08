@@ -1,0 +1,677 @@
+import sqlite3
+import httpx
+import json
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+import os
+from utils.migration_helper import MigrationHelper
+
+class VendaRepository:
+    def __init__(self):
+        self.backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        self.db_path = self._get_database_path()
+        self._ensure_migration()
+        self._ensure_change_log_table()
+    
+    def _get_database_path(self) -> Path:
+        """Obtém o caminho do banco de dados baseado no sistema operacional."""
+        return Path(__file__).parent.parent / 'database' / 'sistema.db'
+    
+    def _is_online(self) -> bool:
+        """Verifica se o backend está online (versão síncrona)."""
+        try:
+            response = httpx.get(f"{self.backend_url}/healthz", timeout=3.0)
+            return response.status_code == 200
+        except:
+            return False
+    
+    async def is_backend_online(self) -> bool:
+        """Versão assíncrona para verificar se o backend está online."""
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+                    response = await client.get(f"{self.backend_url}/healthz")
+                    if response.status_code == 200:
+                        return True
+            except Exception:
+                pass
+            
+            if attempt < max_retries - 1:
+                import asyncio
+                await asyncio.sleep(1)
+        
+        return False
+    
+    def _ensure_migration(self):
+        """Garante que as colunas de sincronização existam na tabela vendas."""
+        try:
+            migration_helper = MigrationHelper()
+            if migration_helper.check_migration_needed():
+                print("[VENDA_REPO] Executando migração automática...")
+                migration_helper.migrate_vendas_table()
+        except Exception as e:
+            print(f"[VENDA_REPO] Erro durante migração: {e}")
+    
+    def get_all(self) -> List[Dict[str, Any]]:
+        """Obtém todas as vendas (híbrido: servidor primeiro, fallback local)."""
+        if self._is_online():
+            try:
+                response = httpx.get(f"{self.backend_url}/api/vendas/", timeout=5.0)
+                if response.status_code == 200:
+                    return response.json()
+            except Exception as e:
+                print(f"Erro ao buscar vendas do servidor: {e}")
+        
+        # Fallback para dados locais
+        return self._get_all_local()
+    
+    def _get_all_local(self) -> List[Dict[str, Any]]:
+        """Obtém todas as vendas do banco local."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, usuario_id, total, forma_pagamento, valor_recebido, troco,
+                       data_venda, status, motivo_alteracao, alterado_por, data_alteracao,
+                       origem, valor_original_divida, desconto_aplicado_divida,
+                       COALESCE(uuid, '') as uuid, COALESCE(synced, 0) as synced
+                FROM vendas 
+                ORDER BY data_venda DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_by_id(self, venda_id: int) -> Optional[Dict[str, Any]]:
+        """Obtém venda por ID (híbrido)."""
+        if self._is_online():
+            try:
+                # Buscar UUID da venda local
+                venda_local = self._get_local_venda_by_id(venda_id)
+                if venda_local and venda_local.get('uuid'):
+                    response = httpx.get(
+                        f"{self.backend_url}/api/vendas/{venda_local['uuid']}", 
+                        timeout=5.0
+                    )
+                    if response.status_code == 200:
+                        return response.json()
+            except Exception as e:
+                print(f"Erro ao buscar venda do servidor: {e}")
+        
+        # Fallback para dados locais
+        return self._get_local_venda_by_id(venda_id)
+    
+    def _get_local_venda_by_id(self, venda_id: int) -> Optional[Dict[str, Any]]:
+        """Obtém venda por ID do banco local."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, usuario_id, total, forma_pagamento, valor_recebido, troco,
+                       data_venda, status, motivo_alteracao, alterado_por, data_alteracao,
+                       origem, valor_original_divida, desconto_aplicado_divida,
+                       COALESCE(uuid, '') as uuid, COALESCE(synced, 0) as synced
+                FROM vendas 
+                WHERE id = ?
+            """, (venda_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def create(self, venda_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Cria nova venda (híbrido)."""
+        # Gerar UUID se não existir
+        if 'uuid' not in venda_data or not venda_data['uuid']:
+            venda_data['uuid'] = str(uuid.uuid4())
+        
+        # Tentar criar no servidor primeiro
+        if self._is_online():
+            try:
+                response = httpx.post(
+                    f"{self.backend_url}/api/vendas/",
+                    json=venda_data,
+                    timeout=5.0
+                )
+                if response.status_code in [200, 201]:
+                    venda_data['synced'] = 1
+                    server_venda = response.json()
+                    venda_data.update(server_venda)
+                    print("Venda criada no servidor com sucesso")
+                else:
+                    print(f"Erro HTTP {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"Erro ao criar venda no servidor: {e}")
+        else:
+            print("Backend offline, venda sera criada apenas localmente")
+        
+        # Sempre criar localmente
+        venda_criada = self._create_local_venda(venda_data)
+        
+        # Log para sincronização se não foi sincronizado
+        if venda_data.get('synced', 0) == 0:
+            self._log_change(venda_data['uuid'], 'CREATE', venda_data)
+        
+        return venda_criada
+    
+    def _create_local_venda(self, venda_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Cria venda no banco local."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO vendas (usuario_id, total, forma_pagamento, valor_recebido, 
+                                  troco, data_venda, status, motivo_alteracao, alterado_por,
+                                  data_alteracao, origem, valor_original_divida, 
+                                  desconto_aplicado_divida, uuid, synced)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                venda_data.get('usuario_id'),
+                venda_data.get('total', 0.0),
+                venda_data.get('forma_pagamento', 'dinheiro'),
+                venda_data.get('valor_recebido', 0.0),
+                venda_data.get('troco', 0.0),
+                venda_data.get('data_venda', datetime.now().isoformat()),
+                venda_data.get('status', 'concluida'),
+                venda_data.get('motivo_alteracao', ''),
+                venda_data.get('alterado_por'),
+                venda_data.get('data_alteracao'),
+                venda_data.get('origem', 'local'),
+                venda_data.get('valor_original_divida', 0.0),
+                venda_data.get('desconto_aplicado_divida', 0.0),
+                venda_data['uuid'],
+                venda_data.get('synced', 0)
+            ))
+            
+            venda_id = cursor.lastrowid
+            conn.commit()
+            
+            # Retornar venda criada
+            return self._get_local_venda_by_id(venda_id)
+    
+    def update(self, venda_id: int, venda_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Atualiza venda (híbrido)."""
+        # Obter UUID da venda local
+        venda_local = self._get_local_venda_by_id(venda_id)
+        if not venda_local:
+            return None
+        
+        venda_uuid = venda_local['uuid']
+        
+        # Tentar atualizar no servidor
+        if self._is_online():
+            try:
+                response = httpx.put(
+                    f"{self.backend_url}/api/vendas/{venda_uuid}",
+                    json=venda_data,
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    venda_data['synced'] = 1
+                    server_venda = response.json()
+                    venda_data.update(server_venda)
+                    print("Venda atualizada no servidor com sucesso")
+                else:
+                    print(f"Erro HTTP {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"Erro ao atualizar venda no servidor: {e}")
+        else:
+            print("Backend offline, venda sera atualizada apenas localmente")
+        
+        # Sempre atualizar localmente
+        venda_atualizada = self._update_local_venda(venda_id, venda_data)
+        
+        # Log para sincronização se não foi sincronizado
+        if venda_data.get('synced', 0) == 0:
+            self._log_change(venda_uuid, 'UPDATE', venda_data)
+        
+        return venda_atualizada
+    
+    def _update_local_venda(self, venda_id: int, venda_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Atualiza venda no banco local."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE vendas 
+                SET usuario_id = ?, total = ?, forma_pagamento = ?, valor_recebido = ?,
+                    troco = ?, status = ?, motivo_alteracao = ?, alterado_por = ?,
+                    data_alteracao = ?, origem = ?, valor_original_divida = ?,
+                    desconto_aplicado_divida = ?, synced = ?
+                WHERE id = ?
+            """, (
+                venda_data.get('usuario_id'),
+                venda_data.get('total', 0.0),
+                venda_data.get('forma_pagamento', 'dinheiro'),
+                venda_data.get('valor_recebido', 0.0),
+                venda_data.get('troco', 0.0),
+                venda_data.get('status', 'concluida'),
+                venda_data.get('motivo_alteracao', ''),
+                venda_data.get('alterado_por'),
+                datetime.now().isoformat(),
+                venda_data.get('origem', 'local'),
+                venda_data.get('valor_original_divida', 0.0),
+                venda_data.get('desconto_aplicado_divida', 0.0),
+                venda_data.get('synced', 0),
+                venda_id
+            ))
+            conn.commit()
+            
+            # Retornar venda atualizada
+            return self._get_local_venda_by_id(venda_id)
+    
+    def delete(self, venda_id: int) -> bool:
+        """Deleta venda (soft delete híbrido)."""
+        venda_local = self._get_local_venda_by_id(venda_id)
+        if not venda_local:
+            return False
+        
+        venda_uuid = venda_local['uuid']
+        
+        # Tentar deletar no servidor
+        if self._is_online():
+            try:
+                response = httpx.delete(
+                    f"{self.backend_url}/api/vendas/{venda_uuid}",
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    print("Venda deletada no servidor com sucesso")
+                else:
+                    print(f"Erro HTTP {response.status_code}: {response.text}")
+            except Exception as e:
+                print(f"Erro ao deletar venda no servidor: {e}")
+        
+        # Soft delete local (marcar como cancelada)
+        success = self._soft_delete_local_venda(venda_id)
+        
+        # Log para sincronização
+        if success:
+            self._log_change(venda_uuid, 'DELETE', {})
+        
+        return success
+    
+    def _soft_delete_local_venda(self, venda_id: int) -> bool:
+        """Soft delete da venda (marca como cancelada)."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE vendas 
+                SET status = 'cancelada', 
+                    motivo_alteracao = 'Venda cancelada',
+                    data_alteracao = ?
+                WHERE id = ?
+            """, (datetime.now().isoformat(), venda_id))
+            
+            success = cursor.rowcount > 0
+            conn.commit()
+            return success
+    
+    def _log_change(self, entity_id: str, operation: str, data: Dict[Any, Any]):
+        """Registra mudança no change_log para sincronização posterior."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO change_log (entity_type, entity_id, operation, data_json, created_at, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                'vendas',
+                entity_id,
+                operation,
+                json.dumps(data),
+                datetime.now().isoformat(),
+                'pending'
+            ))
+            conn.commit()
+    
+    def _ensure_change_log_table(self):
+        """Garante que a tabela change_log existe."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS change_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    data_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    status TEXT DEFAULT 'pending'
+                )
+            """)
+            conn.commit()
+    
+    async def sincronizar_mudancas(self) -> Dict[str, Any]:
+        """Sincroniza mudanças bidirecionalmente com o servidor."""
+        print("=== INICIANDO SINCRONIZACAO BIDIRECIONAL DE VENDAS ===")
+        
+        # Verificar conectividade
+        if not await self.is_backend_online():
+            return {
+                "status": "offline",
+                "message": "Backend offline - operando localmente",
+                "enviadas": 0,
+                "recebidas": 0,
+                "mudancas_pendentes": 0
+            }
+        
+        try:
+            # FASE 1: Pull - buscar vendas do servidor
+            vendas_recebidas = await self._pull_vendas_do_servidor()
+            
+            # FASE 2: Push - enviar vendas antigas não sincronizadas
+            vendas_antigas_enviadas = await self._sincronizar_vendas_antigas()
+            
+            # FASE 3: Push - enviar mudanças pendentes
+            mudancas = await self._obter_mudancas_pendentes()
+            mudancas_enviadas = 0
+            
+            print(f"FASE 3: Enviando mudancas pendentes de vendas...")
+            print(f"Encontradas {len(mudancas)} mudancas pendentes de vendas")
+            
+            if len(mudancas) == 0:
+                print("Nenhuma sincronizacao necessaria para vendas")
+            
+            return {
+                "status": "success",
+                "message": f"Sincronização de vendas concluída. {vendas_antigas_enviadas} vendas antigas enviadas, {mudancas_enviadas} mudanças enviadas.",
+                "enviadas": vendas_antigas_enviadas + mudancas_enviadas,
+                "recebidas": vendas_recebidas,
+                "mudancas_pendentes": len(mudancas)
+            }
+            
+        except Exception as e:
+            print(f"Erro na sincronização de vendas: {e}")
+            return {
+                "status": "error",
+                "message": f"Erro na sincronização: {str(e)}",
+                "enviadas": 0,
+                "recebidas": 0,
+                "mudancas_pendentes": 0
+            }
+    
+    async def _pull_vendas_do_servidor(self) -> int:
+        """Busca vendas do servidor e atualiza localmente."""
+        print("FASE 1: Buscando vendas do servidor...")
+        return 0  # Por enquanto, não implementado
+    
+    async def _sincronizar_vendas_antigas(self) -> int:
+        """Sincroniza vendas antigas não sincronizadas com o servidor."""
+        print("FASE 2: Enviando vendas antigas...")
+        print("Verificando vendas antigas nao sincronizadas...")
+        
+        # Verificar se há vendas locais não sincronizadas (incluindo bulk sync)
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Primeiro verificar se há vendas nunca sincronizadas (bulk sync)
+            cursor.execute("""
+                SELECT COUNT(*) FROM vendas v
+                WHERE (v.synced = 0 OR v.synced IS NULL) AND v.uuid IS NOT NULL AND v.uuid != ''
+                  AND v.status != 'Anulada'
+            """)
+            vendas_nao_sync_count = cursor.fetchone()[0]
+            
+            if vendas_nao_sync_count > 0:
+                print(f"Verificando vendas antigas nao sincronizadas...")
+                cursor.execute("""
+                    SELECT v.id, v.data_venda, v.total, v.desconto_aplicado_divida, v.forma_pagamento, 
+                           v.status, v.uuid
+                    FROM vendas v
+                    WHERE (v.synced = 0 OR v.synced IS NULL) AND v.uuid IS NOT NULL AND v.uuid != ''
+                      AND v.status != 'Anulada'
+                """)
+            else:
+                # Todas já sincronizadas
+                cursor.execute("SELECT 1 WHERE 0")  # Query vazia
+            
+            vendas_nao_sync = cursor.fetchall()
+            
+            if not vendas_nao_sync:
+                print("Todas as vendas ja estao sincronizadas")
+                return 0
+            
+            print(f"Encontradas {len(vendas_nao_sync)} vendas nao sincronizadas")
+            
+            enviados = 0
+            async with httpx.AsyncClient() as client:
+                for venda in vendas_nao_sync:
+                    try:
+                        # Buscar itens da venda
+                        cursor.execute("""
+                            SELECT produto_id, quantidade, preco_unitario, subtotal
+                            FROM itens_venda 
+                            WHERE venda_id = ?
+                        """, (venda[0],))
+                        itens = cursor.fetchall()
+                        
+                        itens_data = []
+                        venda_valida = True
+                        
+                        for item in itens:
+                            # Buscar UUID do produto pelo ID
+                            cursor.execute("SELECT uuid, codigo FROM produtos WHERE id = ?", (item[0],))
+                            produto_result = cursor.fetchone()
+                            
+                            if produto_result and produto_result[0]:
+                                produto_uuid = produto_result[0]
+                                produto_codigo = produto_result[1]
+                                
+                                # Verificar se produto existe no servidor (por UUID ou código)
+                                produto_existe = False
+                                try:
+                                    # Tentar buscar por UUID primeiro
+                                    produto_response = await client.get(
+                                        f"{self.backend_url}/api/produtos/{produto_uuid}",
+                                        timeout=5.0
+                                    )
+                                    if produto_response.status_code == 200:
+                                        produto_existe = True
+                                    else:
+                                        # Se não encontrou por UUID, tentar buscar por código
+                                        produtos_response = await client.get(
+                                            f"{self.backend_url}/api/produtos/",
+                                            timeout=5.0
+                                        )
+                                        if produtos_response.status_code == 200:
+                                            produtos_servidor = produtos_response.json()
+                                            for p in produtos_servidor:
+                                                if p.get('codigo') == produto_codigo:
+                                                    produto_existe = True
+                                                    produto_uuid = p.get('id', produto_uuid)  # Usar ID do servidor
+                                                    break
+                                except Exception as e:
+                                    print(f"Erro ao verificar produto no servidor: {e}")
+                                
+                                if not produto_existe:
+                                    print(f"Produto {produto_codigo} (UUID: {produto_uuid}) não existe no servidor - pulando venda")
+                                    venda_valida = False
+                                    break
+                            else:
+                                print(f"Produto ID {item[0]} não tem UUID - pulando venda")
+                                venda_valida = False
+                                break
+                            
+                            itens_data.append({
+                                "produto_id": str(produto_uuid),  # Garantir que é string
+                                "quantidade": float(item[1]),
+                                "preco_unitario": float(item[2]),
+                                "subtotal": float(item[3])
+                            })
+                        
+                        if not venda_valida:
+                            continue
+                        
+                        venda_data = {
+                            "uuid": venda[6],
+                            "data_venda": venda[1],
+                            "total": float(venda[2]),
+                            "desconto": float(venda[3]) if venda[3] else 0.0,
+                            "forma_pagamento": venda[4] or "Dinheiro",
+                            "status": venda[5],
+                            "itens": itens_data
+                        }
+                        
+                        print(f"Enviando venda antiga: {venda[0]} - MT {venda[2]}")
+                        
+                        # Tentar criar primeiro
+                        response = await client.post(
+                            f"{self.backend_url}/api/vendas/",
+                            json=venda_data,
+                            timeout=10.0
+                        )
+                        
+                        if response.status_code in [200, 201]:
+                            # Marcar como sincronizado
+                            cursor.execute("""
+                                UPDATE vendas 
+                                SET synced = 1, updated_at = CURRENT_TIMESTAMP
+                                WHERE id = ?
+                            """, (venda[0],))
+                            conn.commit()
+                            enviados += 1
+                            print(f"Venda {venda[0]} sincronizada")
+                            
+                        elif response.status_code == 400 and "já existe" in response.text:
+                            # Venda já existe, tentar atualizar
+                            print(f"Venda {venda[0]} ja existe, tentando atualizar...")
+                            
+                            response = await client.put(
+                                f"{self.backend_url}/api/vendas/{venda[6]}",
+                                json=venda_data,
+                                timeout=10.0
+                            )
+                            
+                            if response.status_code == 200:
+                                cursor.execute("""
+                                    UPDATE vendas 
+                                    SET synced = 1, updated_at = CURRENT_TIMESTAMP
+                                    WHERE id = ?
+                                """, (venda[0],))
+                                conn.commit()
+                                enviados += 1
+                                print(f"Venda {venda[0]} atualizada no servidor")
+                            else:
+                                print(f"Erro ao atualizar venda: {response.text}")
+                        else:
+                            print(f"Erro ao enviar venda: {response.status_code} - {response.text}")
+                            
+                    except Exception as e:
+                        print(f"Erro ao processar venda {venda[0]}: {e}")
+            
+            conn.close()
+            print(f"Sincronizacao de vendas antigas concluida: {enviados}/{len(vendas_nao_sync)} enviados")
+            return enviados
+            
+        except Exception as e:
+            print(f"Erro na sincronizacao de vendas antigas: {e}")
+            return 0
+            
+            async with httpx.AsyncClient() as client:
+                for mudanca in mudancas:
+                    try:
+                        print(f"Processando mudanca {mudanca['operation']} para venda {mudanca['entity_id']}")
+                        
+                        if mudanca['operation'] == 'CREATE':
+                            data = json.loads(mudanca['data_json'])
+                            response = await client.post(
+                                f"{self.backend_url}/api/vendas/",
+                                json=data,
+                                timeout=5.0
+                            )
+                            if response.status_code in [200, 201]:
+                                self._mark_change_synced(mudanca['id'])
+                                enviadas += 1
+                                print("Mudanca CREATE de venda sincronizada")
+                            else:
+                                print(f"Erro CREATE: {response.text}")
+                        
+                        elif mudanca['operation'] == 'UPDATE':
+                            data = json.loads(mudanca['data_json'])
+                            response = await client.put(
+                                f"{self.backend_url}/api/vendas/{mudanca['entity_id']}",
+                                json=data,
+                                timeout=5.0
+                            )
+                            if response.status_code == 200:
+                                self._mark_change_synced(mudanca['id'])
+                                enviadas += 1
+                                print("Mudanca UPDATE de venda sincronizada")
+                            else:
+                                print(f"Erro UPDATE: {response.text}")
+                        
+                        elif mudanca['operation'] == 'DELETE':
+                            response = await client.delete(
+                                f"{self.backend_url}/api/vendas/{mudanca['entity_id']}",
+                                timeout=5.0
+                            )
+                            if response.status_code == 200:
+                                self._mark_change_synced(mudanca['id'])
+                                enviadas += 1
+                                print("Mudanca DELETE de venda sincronizada")
+                            else:
+                                print(f"Erro DELETE: {response.text}")
+                                
+                    except Exception as e:
+                        print(f"Erro ao sincronizar mudanca de venda {mudanca['id']}: {e}")
+            
+            print(f"Sincronizacao de vendas concluida: {enviadas} mudancas enviadas")
+            return {
+                "status": "success",
+                "enviadas": enviadas,
+                "recebidas": 0,
+                "message": f"Sincronização de vendas concluída. {enviadas} mudanças enviadas."
+            }
+            
+        except Exception as e:
+            print(f"Erro geral na sincronizacao de vendas: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    async def _obter_mudancas_pendentes(self) -> List[Dict[str, Any]]:
+        """Obtém mudanças pendentes de vendas."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, entity_type, entity_id, operation, data_json, created_at
+                FROM change_log 
+                WHERE entity_type = 'vendas' AND status = 'pending'
+                ORDER BY created_at ASC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def _mark_change_synced(self, change_id: int):
+        """Marca mudança como sincronizada."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE change_log 
+                SET status = 'synced', updated_at = ?
+                WHERE id = ?
+            """, (datetime.now().isoformat(), change_id))
+            conn.commit()
+    
+    def get_vendas_periodo(self, data_inicio: str, data_fim: str) -> List[Dict[str, Any]]:
+        """Obtém vendas por período."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM vendas 
+                WHERE DATE(data_venda) BETWEEN ? AND ?
+                AND status != 'cancelada'
+                ORDER BY data_venda DESC
+            """, (data_inicio, data_fim))
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_total_vendas_hoje(self) -> float:
+        """Obtém total de vendas do dia atual."""
+        hoje = datetime.now().strftime('%Y-%m-%d')
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COALESCE(SUM(total), 0) as total
+                FROM vendas 
+                WHERE DATE(data_venda) = ? AND status != 'cancelada'
+            """, (hoje,))
+            result = cursor.fetchone()
+            return result[0] if result else 0.0

@@ -4,27 +4,56 @@ from datetime import datetime, timedelta
 from utils.translation_mixin import TranslationMixin
 from utils.helpers import formatar_moeda
 from views.generic_table_style import apply_table_style
+import logging
 
 class GerenciarVendasView(ft.UserControl, TranslationMixin):
     def __init__(self, page: ft.Page, usuario):
+        # Registrar início da operação para diagnóstico de desempenho
+        inicio_inicializacao = datetime.now()
+        print(f"[DESEMPENHO] Iniciando inicialização da página Gerenciar Vendas em {inicio_inicializacao.strftime('%H:%M:%S.%f')}")
+        
         super().__init__()
         self.page = page
         self.page.bgcolor = ft.colors.WHITE
         self.usuario = usuario
         self.db = Database()
         
+        # Configurações de paginação
+        self.pagina_atual = 1
+        self.itens_por_pagina = 50
+        self.total_vendas = 0
+        
+        # Log de acesso à página
+        logging.info(f"[ACESSO] Usuário {self.usuario['nome']} (ID: {self.usuario['id']}) acessou a página Gerenciar Vendas em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"[ACESSO] Usuário {self.usuario['nome']} (ID: {self.usuario['id']}) acessou a página Gerenciar Vendas em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        
         # Inicializar a referência do total_text
         self.total_text = ft.Ref[ft.Text]()
         
         # Inicializar campos de busca
+        print(f"[DESEMPENHO] Inicializando campos de busca...")
         self.init_search_fields()
+        
         # Inicializar tabela
+        print(f"[DESEMPENHO] Inicializando tabela...")
         self.init_table()
+        
         # Inicializar diálogos
+        print(f"[DESEMPENHO] Inicializando diálogos...")
         self.init_dialogs()
         
-        # Carregar vendas iniciais
+        # Registrar tempo antes de carregar vendas
+        antes_carregar = datetime.now()
+        tempo_inicializacao = (antes_carregar - inicio_inicializacao).total_seconds()
+        print(f"[DESEMPENHO] Inicialização de componentes completada em {tempo_inicializacao:.2f} segundos. Iniciando carregamento de vendas...")
+        
+        # Carregar vendas iniciais (limitado para melhorar desempenho)
         self.carregar_vendas()
+        
+        # Registrar tempo total da inicialização
+        fim_inicializacao = datetime.now()
+        tempo_total = (fim_inicializacao - inicio_inicializacao).total_seconds()
+        print(f"[DESEMPENHO] Inicialização total da página completada em {tempo_total:.2f} segundos.")
 
     def init_search_fields(self):
         # Data inicial (30 dias atrás)
@@ -51,8 +80,8 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
         
         # Campo de busca
         self.busca_field = ft.TextField(
-            label="Buscar venda",
-            width=300,
+            label="Buscar por ID, vendedor ou forma de pagamento",
+            width=350,
             height=50,
             prefix_icon=ft.icons.SEARCH,
             on_change=self.filtrar_vendas,
@@ -61,6 +90,23 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
         )
 
     def init_table(self):
+        # Indicador de carregamento
+        self.loading_indicator = ft.ProgressBar(width=500, visible=False)
+        
+        # Controles de paginação
+        self.pagina_anterior_btn = ft.IconButton(
+            icon=ft.icons.ARROW_BACK,
+            on_click=self.pagina_anterior,
+            disabled=True
+        )
+        
+        self.pagina_proxima_btn = ft.IconButton(
+            icon=ft.icons.ARROW_FORWARD,
+            on_click=self.pagina_proxima
+        )
+        
+        self.pagina_info = ft.Text("Página 1")
+        
         self.vendas_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Nº Venda", color=ft.colors.GREY_900)),
@@ -237,30 +283,20 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
         # Diálogo de confirmação para deletar venda
         self.dialog_deletar = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Deletar Venda", color=ft.colors.BLACK),
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Text(
-                        "Tem certeza que deseja deletar esta venda?\nEsta ação não pode ser desfeita.",
-                        color=ft.colors.BLACK
-                    )
-                ], spacing=20),
-                bgcolor=ft.colors.WHITE,
-                padding=20
+            title=ft.Text("Deletar Venda", size=16, color=ft.colors.BLACK),
+            content=ft.Text(
+                "Tem certeza que deseja deletar esta venda?",
+                color=ft.colors.BLACK,
+                size=14
             ),
             actions=[
-                ft.ElevatedButton(
+                ft.TextButton(
                     "Cancelar",
-                    icon=ft.icons.CANCEL,
-                    bgcolor=ft.colors.BLUE_400,
-                    color=ft.colors.WHITE,
                     on_click=self.fechar_dialog
                 ),
-                ft.ElevatedButton(
+                ft.TextButton(
                     "Deletar",
-                    icon=ft.icons.DELETE_FOREVER,
-                    bgcolor=ft.colors.RED_400,
-                    color=ft.colors.WHITE,
+                    style=ft.ButtonStyle(color=ft.colors.RED),
                     on_click=self.confirmar_deletar
                 )
             ],
@@ -270,36 +306,71 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
         # Diálogo de confirmação para deletar múltiplas vendas
         self.dialog_deletar_multiplas = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Deletar Vendas", color=ft.colors.BLACK),
-            content=ft.Container(
-                content=ft.Column([
-                    ft.Text(
-                        "Tem certeza que deseja deletar todas as vendas filtradas?\nEsta ação não pode ser desfeita.",
-                        color=ft.colors.BLACK
-                    )
-                ], spacing=20),
-                bgcolor=ft.colors.WHITE,
-                padding=20
+            title=ft.Text("Deletar Vendas", size=16, color=ft.colors.BLACK),
+            content=ft.Text(
+                "Tem certeza que deseja deletar todas as vendas filtradas?",
+                color=ft.colors.BLACK,
+                size=14
             ),
             actions=[
-                ft.ElevatedButton(
+                ft.TextButton(
                     "Cancelar",
-                    icon=ft.icons.CANCEL,
-                    bgcolor=ft.colors.BLUE_400,
-                    color=ft.colors.WHITE,
                     on_click=self.fechar_dialog
                 ),
-                ft.ElevatedButton(
+                ft.TextButton(
                     "Deletar Todas",
-                    icon=ft.icons.DELETE_SWEEP,
-                    bgcolor=ft.colors.RED_400,
-                    color=ft.colors.WHITE,
+                    style=ft.ButtonStyle(color=ft.colors.RED),
                     on_click=self.confirmar_deletar_multiplas
                 )
             ],
             actions_alignment=ft.MainAxisAlignment.END
         )
 
+    def voltar_dashboard(self, e):
+        # Mostrar indicador de carregamento
+        self.loading_indicator.visible = True
+        self.update()
+        
+        # Registrar início da operação para diagnóstico de desempenho
+        inicio_saida = datetime.now()
+        print(f"[DESEMPENHO] Iniciando saída da página em {inicio_saida.strftime('%H:%M:%S.%f')}")
+        
+        # Log de saída da página
+        logging.info(f"[SAÍDA] Usuário {self.usuario['nome']} (ID: {self.usuario['id']}) saiu da página Gerenciar Vendas em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"[SAÍDA] Usuário {self.usuario['nome']} (ID: {self.usuario['id']}) saiu da página Gerenciar Vendas em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        
+        # Limpar dados para liberar memória antes de sair da página
+        self.vendas_table.rows.clear()
+        
+        # Registrar tempo total da operação
+        fim_saida = datetime.now()
+        tempo_saida = (fim_saida - inicio_saida).total_seconds()
+        print(f"[DESEMPENHO] Saída da página completada em {tempo_saida:.2f} segundos.")
+        
+        # Navegar para o dashboard
+        self.page.go("/dashboard")
+            
+    def pagina_anterior(self, e):
+        if self.pagina_atual > 1:
+            # Mostrar indicador de carregamento
+            self.loading_indicator.visible = True
+            self.update()
+            
+            self.pagina_atual -= 1
+            self.carregar_vendas()
+    
+    def pagina_proxima(self, e):
+        # Calcular total de páginas
+        total_paginas = (self.total_vendas + self.itens_por_pagina - 1) // self.itens_por_pagina
+        
+        if self.pagina_atual < total_paginas:
+            # Mostrar indicador de carregamento
+            self.loading_indicator.visible = True
+            self.update()
+            
+            self.pagina_atual += 1
+            self.carregar_vendas()
+    
     def build(self):
         return ft.Column([
             # Header
@@ -307,7 +378,7 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                 content=ft.Row([
                     ft.IconButton(
                         icon=ft.icons.ARROW_BACK,
-                        on_click=lambda _: self.page.go("/dashboard"),
+                        on_click=self.voltar_dashboard,
                         icon_color=ft.colors.WHITE
                     ),
                     ft.Icon(
@@ -358,6 +429,14 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
             ),
             ft.Container(height=20),
             
+            # Indicador de carregamento
+            ft.Container(
+                content=self.loading_indicator,
+                bgcolor=ft.colors.WHITE,
+                padding=ft.padding.only(left=20, right=20),
+                border_radius=10
+            ),
+            
             # Tabela de vendas
             ft.Container(
                 content=ft.Column([
@@ -370,6 +449,15 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                         border=ft.border.all(1, ft.colors.BLACK26),
                         border_radius=10,
                         padding=10
+                    ),
+                    # Controles de paginação
+                    ft.Row(
+                        [
+                            self.pagina_anterior_btn,
+                            self.pagina_info,
+                            self.pagina_proxima_btn
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER
                     )
                 ]),
                 bgcolor=ft.colors.WHITE,
@@ -380,6 +468,14 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
 
     def carregar_vendas(self, e=None):
         try:
+            # Mostrar indicador de carregamento
+            self.loading_indicator.visible = True
+            self.update()
+            
+            # Registrar início da operação para diagnóstico de desempenho
+            inicio_operacao = datetime.now()
+            print(f"[DESEMPENHO] Iniciando carregamento de vendas em {inicio_operacao.strftime('%H:%M:%S.%f')}")
+            
             # Verificar se a coluna status existe
             colunas = self.db.fetchall("PRAGMA table_info(vendas)")
             tem_status = any(col['name'] == 'status' for col in colunas)
@@ -390,7 +486,21 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
             else:
                 status_sql = "'Ativa' as status"
             
-            # Buscar vendas no banco de dados
+            # Calcular o offset para paginação
+            offset = (self.pagina_atual - 1) * self.itens_por_pagina
+            
+            # Primeiro, obter o total de vendas para paginação
+            total_query = self.db.fetchone(f"""
+                SELECT COUNT(*) as total
+                FROM vendas v
+                JOIN usuarios u ON v.usuario_id = u.id
+                WHERE DATE(v.data_venda) BETWEEN ? AND ?
+            """, (self.data_inicio.value, self.data_fim.value))
+            
+            self.total_vendas = total_query['total'] if total_query else 0
+            total_paginas = (self.total_vendas + self.itens_por_pagina - 1) // self.itens_por_pagina
+            
+            # Buscar vendas no banco de dados com paginação
             vendas = self.db.fetchall(f"""
                 SELECT 
                     v.id,
@@ -403,7 +513,13 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                 JOIN usuarios u ON v.usuario_id = u.id
                 WHERE DATE(v.data_venda) BETWEEN ? AND ?
                 ORDER BY v.data_venda DESC
-            """, (self.data_inicio.value, self.data_fim.value))
+                LIMIT ? OFFSET ?
+            """, (self.data_inicio.value, self.data_fim.value, self.itens_por_pagina, offset))
+            
+            # Registrar tempo após consulta
+            apos_consulta = datetime.now()
+            tempo_consulta = (apos_consulta - inicio_operacao).total_seconds()
+            print(f"[DESEMPENHO] Consulta SQL completada em {tempo_consulta:.2f} segundos. Encontradas {len(vendas)} vendas.")
 
             self.vendas_table.rows.clear()
             for v in vendas:
@@ -413,52 +529,86 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                     # Fallback caso a data esteja em um formato diferente
                     data_formatada = v['data_venda']
 
+                # Criar botões de ação com base no status da venda
+                acoes = []
+                
+                # Sempre adicionar o botão de visualizar detalhes
+                acoes.append(
+                    ft.IconButton(
+                        icon=ft.icons.VISIBILITY,
+                        icon_color=ft.colors.BLUE,
+                        tooltip="Ver Detalhes",
+                        data=v,
+                        on_click=self.ver_detalhes
+                    )
+                )
+                
+                # Se a venda estiver ativa, adicionar os outros botões
+                if v['status'].lower() == "ativa":
+                    acoes.append(
+                        ft.IconButton(
+                            icon=ft.icons.EDIT,
+                            icon_color=ft.colors.ORANGE,
+                            tooltip="Editar Venda",
+                            data=v,
+                            on_click=self.mostrar_dialog_edicao
+                        )
+                    )
+                    acoes.append(
+                        ft.IconButton(
+                            icon=ft.icons.CANCEL,
+                            icon_color=ft.colors.RED,
+                            tooltip="Anular Venda",
+                            data=v,
+                            on_click=self.mostrar_dialog_anulacao
+                        )
+                    )
+                
+                # Sempre adicionar o botão de deletar
+                acoes.append(
+                    ft.IconButton(
+                        icon=ft.icons.DELETE_FOREVER,
+                        icon_color=ft.colors.RED_700,
+                        tooltip="Deletar venda",
+                        data=v,
+                        on_click=self.mostrar_dialog_deletar
+                    )
+                )
+                
                 self.vendas_table.rows.append(
                     ft.DataRow(
                         cells=[
                             ft.DataCell(ft.Text(str(v['id']))),
                             ft.DataCell(ft.Text(data_formatada)),
-                            ft.DataCell(ft.Text(v['vendedor'])),
-                            ft.DataCell(ft.Text(f"MT {v['total']:.2f}")),
-                            ft.DataCell(ft.Text(v['forma_pagamento'])),
-                            ft.DataCell(ft.Text(v['status'])),
-                            ft.DataCell(
-                                ft.Row([
-                                    ft.IconButton(
-                                        icon=ft.icons.VISIBILITY,
-                                        icon_color=ft.colors.BLUE,
-                                        tooltip="Ver Detalhes",
-                                        data=v,
-                                        on_click=self.ver_detalhes
-                                    ),
-                                    ft.IconButton(
-                                        icon=ft.icons.EDIT,
-                                        icon_color=ft.colors.ORANGE,
-                                        tooltip="Editar Venda",
-                                        data=v,
-                                        on_click=self.mostrar_dialog_edicao
-                                    ),
-                                    ft.IconButton(
-                                        icon=ft.icons.CANCEL,
-                                        icon_color=ft.colors.RED,
-                                        tooltip="Anular Venda",
-                                        data=v,
-                                        on_click=self.mostrar_dialog_anulacao
-                                    ),
-                                    ft.IconButton(
-                                        icon=ft.icons.DELETE_FOREVER,
-                                        icon_color=ft.colors.RED_700,
-                                        tooltip="Deletar venda",
-                                        data=v,
-                                        on_click=self.mostrar_dialog_deletar
-                                    )
-                                ])
-                            )
+                            ft.DataCell(ft.Text(v['vendedor'] or "N/A")),
+                            ft.DataCell(ft.Text(f"MT {v['total']:.2f}" if v['total'] is not None else "MT 0.00")),
+                            ft.DataCell(ft.Text(v['forma_pagamento'] or "N/A")),
+                            ft.DataCell(ft.Text(v['status'] or "N/A")),
+                            ft.DataCell(ft.Row(acoes))
                         ]
                     )
                 )
+            
+            # Atualizar informações de paginação
+            total_paginas = (self.total_vendas + self.itens_por_pagina - 1) // self.itens_por_pagina
+            self.pagina_info.value = f"Página {self.pagina_atual} de {total_paginas} (Total: {self.total_vendas} vendas)"
+            
+            # Atualizar estado dos botões de paginação
+            self.pagina_anterior_btn.disabled = self.pagina_atual <= 1
+            self.pagina_proxima_btn.disabled = self.pagina_atual >= total_paginas
+            
+            # Esconder indicador de carregamento
+            self.loading_indicator.visible = False
             self.update()
+            
+            # Registrar tempo total da operação
+            fim_operacao = datetime.now()
+            tempo_total = (fim_operacao - inicio_operacao).total_seconds()
+            print(f"[DESEMPENHO] Carregamento total de vendas completado em {tempo_total:.2f} segundos. Exibindo página {self.pagina_atual} de {total_paginas}.")
         except Exception as e:
+            # Esconder indicador de carregamento em caso de erro
+            self.loading_indicator.visible = False
+            self.update()
             print(f"Erro ao carregar vendas: {e}")
             self.mostrar_erro("Erro ao carregar vendas!")
 
@@ -698,11 +848,12 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                 JOIN usuarios u ON v.usuario_id = u.id
                 WHERE (
                     LOWER(CAST(v.id AS TEXT)) LIKE ? OR
-                    LOWER(u.nome) LIKE ?
+                    LOWER(u.nome) LIKE ? OR
+                    LOWER(COALESCE(v.forma_pagamento, '')) LIKE ?
                 )
                 AND DATE(v.data_venda) BETWEEN ? AND ?
                 ORDER BY v.data_venda DESC
-            """, (f"%{termo}%", f"%{termo}%", self.data_inicio.value, self.data_fim.value))
+            """, (f"%{termo}%", f"%{termo}%", f"%{termo}%", self.data_inicio.value, self.data_fim.value))
             
             self.atualizar_tabela_vendas(vendas)
             
@@ -749,17 +900,23 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                 ft.DataRow(
                     cells=[
                         ft.DataCell(ft.Text(str(venda['id']))),
-                        ft.DataCell(ft.Text(venda['data_venda'])),
-                        ft.DataCell(ft.Text(venda['vendedor'])),
-                        ft.DataCell(ft.Text(f"MT {venda['total']:.2f}")),
-                        ft.DataCell(ft.Text(venda['forma_pagamento'])),
-                        ft.DataCell(ft.Text(venda['status'])),
+                        ft.DataCell(ft.Text(venda['data_venda'] or "N/A")),
+                        ft.DataCell(ft.Text(venda['vendedor'] or "N/A")),
+                        ft.DataCell(ft.Text(f"MT {venda['total']:.2f}" if venda['total'] is not None else "MT 0.00")),
+                        ft.DataCell(ft.Text(venda['forma_pagamento'] or "N/A")),
+                        ft.DataCell(ft.Text(venda['status'] or "N/A")),
                         ft.DataCell(botoes_acao)
                     ]
                 )
             )
         self.update()
 
+    def voltar_dashboard(self, e):
+        """Registra o log de saída e volta para o dashboard"""
+        logging.info(f"[SAÍDA] Usuário {self.usuario['nome']} (ID: {self.usuario['id']}) saiu da página Gerenciar Vendas em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"[SAÍDA] Usuário {self.usuario['nome']} (ID: {self.usuario['id']}) saiu da página Gerenciar Vendas em {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        self.page.go("/dashboard")
+        
     def mostrar_erro(self, mensagem):
         self.page.show_snack_bar(
             ft.SnackBar(
@@ -1497,22 +1654,53 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
         self.page.update()
 
     def confirmar_deletar(self, e):
-        """Deleta uma venda específica"""
+        """Anula uma venda específica e devolve o estoque"""
         try:
+            # Verificar se a venda já está anulada
+            venda_status = self.db.fetchone("""
+                SELECT status FROM vendas WHERE id = ?
+            """, (self.venda_id_para_deletar,))
+            
+            if venda_status and venda_status['status'] == 'Anulada':
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text("Esta venda já foi anulada anteriormente!"),
+                        bgcolor=ft.colors.ORANGE
+                    )
+                )
+                self.fechar_dialog(e)
+                return
+            
             # Iniciar transação
             self.db.execute("BEGIN TRANSACTION")
             
-            # Deletar os itens da venda primeiro
-            self.db.execute(
-                "DELETE FROM itens_venda WHERE venda_id = ?",
-                (self.venda_id_para_deletar,)
-            )
+            # Buscar os itens da venda para devolver o estoque
+            itens_venda = self.db.fetchall("""
+                SELECT iv.produto_id, iv.quantidade, p.nome
+                FROM itens_venda iv
+                JOIN produtos p ON iv.produto_id = p.id
+                WHERE iv.venda_id = ?
+            """, (self.venda_id_para_deletar,))
             
-            # Deletar a venda
-            self.db.execute(
-                "DELETE FROM vendas WHERE id = ?",
-                (self.venda_id_para_deletar,)
-            )
+            # Devolver estoque para cada item
+            for item in itens_venda:
+                self.db.execute("""
+                    UPDATE produtos 
+                    SET estoque = estoque + ? 
+                    WHERE id = ?
+                """, (item['quantidade'], item['produto_id']))
+                print(f"Devolvido estoque: {item['quantidade']} unidades de {item['nome']}")
+            
+            # Marcar a venda como anulada em vez de deletar
+            motivo = self.motivo_anulacao.value or "Venda anulada via gerenciamento"
+            self.db.execute("""
+                UPDATE vendas 
+                SET status = 'Anulada',
+                    motivo_alteracao = ?,
+                    data_alteracao = CURRENT_TIMESTAMP,
+                    alterado_por = ?
+                WHERE id = ?
+            """, (f"ANULADA: {motivo}", self.usuario['id'], self.venda_id_para_deletar))
             
             # Commit da transação
             self.db.conn.commit()
@@ -1524,18 +1712,18 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
             # Mostrar mensagem de sucesso
             self.page.show_snack_bar(
                 ft.SnackBar(
-                    content=ft.Text("Venda deletada com sucesso!"),
+                    content=ft.Text("Venda anulada e estoque devolvido com sucesso!"),
                     bgcolor=ft.colors.GREEN_700
                 )
             )
         except Exception as error:
             # Rollback em caso de erro
             self.db.conn.rollback()
-            print(f"Erro ao deletar venda: {error}")
-            self.mostrar_erro(f"Erro ao deletar venda: {str(error)}")
+            print(f"Erro ao anular venda: {error}")
+            self.mostrar_erro(f"Erro ao anular venda: {str(error)}")
 
     def confirmar_deletar_multiplas(self, e):
-        """Deleta todas as vendas filtradas"""
+        """Anula múltiplas vendas e devolve o estoque"""
         try:
             # Construir a query base
             query_base = """
@@ -1554,23 +1742,78 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
             vendas_ids = self.db.fetchall(query_base, tuple(params))
             
             if vendas_ids:
-                # Deletar itens das vendas
-                ids_str = ",".join(str(v['id']) for v in vendas_ids)
-                self.db.execute(f"DELETE FROM itens_venda WHERE venda_id IN ({ids_str})")
+                # Iniciar transação
+                self.db.execute("BEGIN TRANSACTION")
                 
-                # Deletar as vendas
-                self.db.execute(f"DELETE FROM vendas WHERE id IN ({ids_str})")
+                vendas_anuladas = 0
+                for venda in vendas_ids:
+                    venda_id = venda['id']
+                    
+                    # Verificar se a venda já está anulada
+                    venda_status = self.db.fetchone("""
+                        SELECT status FROM vendas WHERE id = ?
+                    """, (venda_id,))
+                    
+                    if venda_status and venda_status['status'] == 'Anulada':
+                        print(f"Venda {venda_id} já estava anulada, pulando...")
+                        continue
+                    
+                    # Buscar os itens da venda para devolver o estoque
+                    itens_venda = self.db.fetchall("""
+                        SELECT iv.produto_id, iv.quantidade, p.nome
+                        FROM itens_venda iv
+                        JOIN produtos p ON iv.produto_id = p.id
+                        WHERE iv.venda_id = ?
+                    """, (venda_id,))
+                    
+                    # Devolver estoque para cada item
+                    for item in itens_venda:
+                        self.db.execute("""
+                            UPDATE produtos 
+                            SET estoque = estoque + ? 
+                            WHERE id = ?
+                        """, (item['quantidade'], item['produto_id']))
+                        print(f"Devolvido estoque: {item['quantidade']} unidades de {item['nome']} (Venda {venda_id})")
+                    
+                    # Marcar a venda como anulada
+                    self.db.execute("""
+                        UPDATE vendas 
+                        SET status = 'Anulada',
+                            motivo_alteracao = 'ANULADA: Anulação em lote via gerenciamento',
+                            data_alteracao = CURRENT_TIMESTAMP,
+                            alterado_por = ?
+                        WHERE id = ?
+                    """, (self.usuario['id'], venda_id))
+                    
+                    vendas_anuladas += 1
+                
+                # Commit da transação
+                self.db.conn.commit()
                 
                 # Fechar o diálogo e recarregar as vendas
                 self.fechar_dialog(e)
                 self.carregar_vendas()
                 
                 # Mostrar mensagem de sucesso
-                self.page.show_snack_bar(
-                    ft.SnackBar(content=ft.Text("Vendas deletadas com sucesso!"))
-                )
+                if vendas_anuladas > 0:
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            content=ft.Text(f"{vendas_anuladas} vendas anuladas e estoque devolvido com sucesso!"),
+                            bgcolor=ft.colors.GREEN_700
+                        )
+                    )
+                else:
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            content=ft.Text("Todas as vendas selecionadas já estavam anuladas!"),
+                            bgcolor=ft.colors.ORANGE
+                        )
+                    )
             else:
-                self.mostrar_erro("Nenhuma venda encontrada para deletar")
+                self.mostrar_erro("Nenhuma venda encontrada para anular")
                 
         except Exception as error:
-            self.mostrar_erro(f"Erro ao deletar vendas: {str(error)}") 
+            # Rollback em caso de erro
+            self.db.conn.rollback()
+            print(f"Erro ao anular vendas: {error}")
+            self.mostrar_erro(f"Erro ao anular vendas: {str(error)}")

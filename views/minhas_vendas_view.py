@@ -30,20 +30,35 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
         # Campo de busca e filtros
         self.data_inicial = ft.TextField(
             label="Data Inicial",
-            width=200,
+            width=180,
             height=50,
             value=datetime.now().strftime("%Y-%m-%d"),
             color=ft.colors.GREY_900,
             bgcolor=ft.colors.WHITE
         )
         self.data_final = ft.TextField(
-            label=self.t("end_date"),
-            width=200,
+            label="Data Final",
+            width=180,
             height=50,
             value=self.data_atual.strftime("%Y-%m-%d"),
             color=ft.colors.GREY_900,
             bgcolor=ft.colors.WHITE,
             read_only=not self.usuario.get('is_admin')  # Somente admin pode alterar
+        )
+        
+        # Filtro de status
+        self.filtro_status = ft.Dropdown(
+            label="Filtrar por status",
+            width=200,
+            height=50,
+            options=[
+                ft.dropdown.Option("Todas"),
+                ft.dropdown.Option("Não Fechadas"),
+                ft.dropdown.Option("Fechadas")
+            ],
+            value="Não Fechadas",
+            color=ft.colors.GREY_900,
+            bgcolor=ft.colors.WHITE
         )
         
         # Tabela de vendas
@@ -65,7 +80,8 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
 
     def carregar_vendas(self, e=None):
         try:
-            vendas = self.db.fetchall("""
+            # Construir a consulta SQL base
+            sql = """
                 SELECT 
                     v.id,
                     DATE(v.data_venda) as data,
@@ -83,9 +99,22 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 WHERE v.usuario_id = ?
                 AND DATE(v.data_venda) BETWEEN ? AND ?
                 AND (v.status IS NULL OR v.status != 'Anulada')
-                GROUP BY v.id
-                ORDER BY v.data_venda DESC
-            """, (self.usuario['id'], self.data_inicial.value, self.data_final.value))
+            """
+            
+            # Parâmetros da consulta
+            params = [self.usuario['id'], self.data_inicial.value, self.data_final.value]
+            
+            # Aplicar filtro de status
+            if self.filtro_status.value == "Não Fechadas":
+                sql += " AND (v.status IS NULL OR v.status != 'Fechada')"
+            elif self.filtro_status.value == "Fechadas":
+                sql += " AND v.status = 'Fechada'"
+                
+            # Ordenação
+            sql += " GROUP BY v.id ORDER BY v.data_venda DESC"
+            
+            # Executar a consulta
+            vendas = self.db.fetchall(sql, params)
 
             # Calcular total do período
             total_periodo = sum(v['total'] for v in vendas)
@@ -115,32 +144,32 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
 
     def mostrar_fechamento_caixa(self, e):
         try:
-            # Primeiro, vamos verificar se há vendas do dia
-            vendas_hoje = self.db.fetchall("""
+            # Verificar se há vendas não fechadas de qualquer data
+            vendas_abertas = self.db.fetchall("""
                 SELECT COUNT(*) as total
                 FROM vendas 
                 WHERE usuario_id = ?
-                AND DATE(data_venda) = DATE('now')
                 AND (status IS NULL OR status != 'Anulada')
-                AND status != 'Fechada'
+                AND (status IS NULL OR status != 'Fechada' OR status = '')
             """, (self.usuario['id'],))
             
-            print(f"Total de vendas hoje: {vendas_hoje[0]['total']}")  # Debug
+            print(f"Total de vendas abertas: {vendas_abertas[0]['total']}")  # Debug
 
-            # Buscar vendas do dia atual não fechadas
+            # Buscar todas as vendas não fechadas agrupadas por forma de pagamento
             vendas_por_forma = self.db.fetchall("""
                 SELECT 
                     forma_pagamento,
+                    DATE(data_venda) as data,
                     COUNT(*) as quantidade,
                     SUM(total) as total,
                     GROUP_CONCAT(id) as venda_ids
                 FROM vendas 
                 WHERE usuario_id = ?
-                AND DATE(data_venda) = DATE('now')
                 AND (status IS NULL OR status != 'Anulada')
-                AND status != 'Fechada'
-                GROUP BY forma_pagamento
+                AND (status IS NULL OR status != 'Fechada' OR status = '')
+                GROUP BY forma_pagamento, DATE(data_venda)
                 HAVING total > 0
+                ORDER BY data
             """, (self.usuario['id'],))
             
             print(f"Vendas por forma encontradas: {len(vendas_por_forma)}")  # Debug
@@ -149,17 +178,16 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
             
             # Se não encontrou vendas para fechar
             if not vendas_por_forma:
-                # Verificar se todas as vendas já foram fechadas
+                # Verificar se existem vendas fechadas
                 vendas_fechadas = self.db.fetchall("""
                     SELECT COUNT(*) as total
                     FROM vendas
                     WHERE usuario_id = ?
-                    AND DATE(data_venda) = DATE('now')
                     AND status = 'Fechada'
                 """, (self.usuario['id'],))
                 
                 if vendas_fechadas[0]['total'] > 0:
-                    mensagem = "Todas as vendas de hoje já foram fechadas!"
+                    mensagem = "Todas as vendas já foram fechadas!"
                 else:
                     mensagem = "Não há vendas para fechar!"
                 
@@ -200,14 +228,24 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
             # Adicionar resumo por forma de pagamento
             for v in vendas_por_forma:
                 total_sistema += v['total']
-                campo = ft.TextField(
-                    label=f"Valor em {v['forma_pagamento']}",
-                    value=str(v['total']),
-                    prefix_text="MT ",
-                    helper_text=f"{v['quantidade']} venda(s) - Sistema: MT {v['total']:.2f}",
-                    color=ft.colors.BLACK,
-                    border_color=ft.colors.BLUE,
-                    on_change=lambda e, forma=v['forma_pagamento']: self.atualizar_diferenca(forma)
+                campo = ft.Container(
+                    content=ft.Row([
+                        ft.Text("MT ", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                        ft.Text(
+                            f"{v['total']:.2f}",
+                            size=16,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.colors.BLUE_900
+                        )
+                    ]),
+                    padding=ft.padding.only(top=10, bottom=5)
+                )
+                
+                # Adicionar texto de ajuda abaixo
+                helper_text = ft.Text(
+                    f"{v['quantidade']} venda(s)",
+                    size=12,
+                    color=ft.colors.GREY_600
                 )
                 
                 # Container para mostrar diferença
@@ -265,20 +303,19 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
             )
             content.controls.append(diferenca_total_text)
 
-            def atualizar_diferenca(self, forma_pagamento):
+            def atualizar_diferenca(forma_pagamento):
                 try:
+                    # Como os valores não são mais editáveis, a diferença será sempre zero
+                    diferenca = 0
                     dados = campos_valores[forma_pagamento]
-                    valor_informado = float(dados['campo'].value or 0)
-                    diferenca = valor_informado - dados['sistema']
                     
                     # Atualizar texto da diferença individual
-                    cor = ft.colors.RED if diferenca < 0 else ft.colors.GREEN if diferenca > 0 else ft.colors.GREY_700
+                    cor = ft.colors.GREY_700  # Sem diferença pois não é mais editável
                     dados['diferenca_text'].value = f"Diferença: MT {diferenca:.2f}"
                     dados['diferenca_text'].color = cor
                     
-                    # Calcular e atualizar diferença total
-                    total_informado = sum(float(d['campo'].value or 0) for d in campos_valores.values())
-                    diferenca_total = total_informado - total_sistema
+                    # Calcular e atualizar diferença total (sempre zero agora)
+                    diferenca_total = 0
                     
                     cor_total = ft.colors.RED if diferenca_total < 0 else ft.colors.GREEN if diferenca_total > 0 else ft.colors.BLUE
                     diferenca_total_text.value = f"Diferença Total: MT {diferenca_total:.2f}"
@@ -297,91 +334,69 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 color=ft.colors.BLACK,
                 border_color=ft.colors.BLUE
             )
-            content.controls.append(
-                ft.Container(
-                    content=observacoes,
-                    padding=10
-                )
-            )
-
-            def confirmar_fechamento(self, e, dlg, campos_valores, total_sistema, observacoes):
+            content.controls.append(ft.Container(observacoes))
+            
+            # Botão de confirmar
+            def confirmar_click(e):
                 try:
+                    # Preparar dados do fechamento
                     dados_fechamento = {
                         'usuario_id': self.usuario['id'],
-                        'data_fechamento': datetime.now(),
-                        'valor_sistema': total_sistema,
-                        'valor_informado': 0,
+                        'data_fechamento': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'total_sistema': total_sistema,
+                        'total_informado': 0,
                         'diferenca': 0,
                         'observacoes': observacoes.value,
-                        'formas_pagamento': []
+                        'detalhes': []
                     }
+                    
+                    # Registrar fechamento
+                    fechamento_id = self.db.registrar_fechamento(dados_fechamento)
+                    
+                    # Atualizar status de todas as vendas não fechadas
+                    self.db.execute("""
+                        UPDATE vendas 
+                        SET status = 'Fechada'
+                        WHERE usuario_id = ?
+                        AND (status IS NULL OR status != 'Anulada')
+                        AND (status IS NULL OR status != 'Fechada' OR status = '')
+                    """, (self.usuario['id'],))
+                    
+                    # Gerar PDF
+                    if self.gerar_pdf_fechamento(dados_fechamento, fechamento_id):
+                        self.db.conn.commit()  # Commit somente se tudo der certo
+                        dlg.open = False
+                        self.page.update()
 
-                    total_informado = 0
-                    for forma, dados in campos_valores.items():
-                        valor_informado = float(dados['campo'].value or 0)
-                        total_informado += valor_informado
-                        diferenca = valor_informado - dados['sistema']
-                        
-                        dados_fechamento['formas_pagamento'].append({
-                            'forma': forma,
-                            'valor_sistema': dados['sistema'],
-                            'valor_informado': valor_informado,
-                            'diferenca': diferenca,
-                            'quantidade_vendas': dados['quantidade']
-                        })
-
-                    dados_fechamento['valor_informado'] = total_informado
-                    dados_fechamento['diferenca'] = total_informado - total_sistema
-
-                    try:
-                        # Registrar fechamento
-                        fechamento_id = self.db.registrar_fechamento(dados_fechamento)
-                        
-                        # Atualizar status das vendas
-                        self.db.execute("""
-                            UPDATE vendas 
-                            SET status = 'Fechada'
-                            WHERE usuario_id = ? 
-                            AND DATE(data_venda) = DATE('now')
-                            AND (status IS NULL OR status != 'Anulada')
-                            AND status != 'Fechada'
-                        """, (self.usuario['id'],))
-                        
-                        # Gerar PDF
-                        if self.gerar_pdf_fechamento(dados_fechamento, fechamento_id):
-                            self.db.conn.commit()  # Commit somente se tudo der certo
-                            dlg.open = False
-                            self.page.update()
-
-                            self.page.show_snack_bar(
-                                ft.SnackBar(
-                                    content=ft.Text("Fechamento realizado com sucesso! PDF gerado."),
-                                    bgcolor=ft.colors.GREEN
-                                )
+                        self.page.show_snack_bar(
+                            ft.SnackBar(
+                                content=ft.Text("Fechamento realizado com sucesso! PDF gerado."),
+                                bgcolor=ft.colors.GREEN
                             )
-                            
-                            # Atualizar a lista de vendas
-                            self.carregar_vendas()
-                        else:
-                            self.db.conn.rollback()  # Rollback se falhar ao gerar PDF
-                            raise Exception("Erro ao gerar PDF")
-
-                    except Exception as e:
-                        self.db.conn.rollback()  # Rollback em caso de qualquer erro
-                        raise e
-
-                except ValueError:
+                        )
+                        
+                        # Atualizar a lista de vendas
+                        self.carregar_vendas()
+                    else:
+                        self.db.conn.rollback()  # Rollback se falhar ao gerar PDF
+                        raise Exception("Erro ao gerar PDF")
+                except ValueError as ve:
+                    self.db.conn.rollback()
+                    error_msg = "Por favor, insira valores válidos!"
+                    print(f"Erro de validação: {ve}")
                     self.page.show_snack_bar(
                         ft.SnackBar(
-                            content=ft.Text("Por favor, insira valores válidos!"),
+                            content=ft.Text(error_msg),
                             bgcolor=ft.colors.RED
                         )
                     )
                 except Exception as error:
-                    print(f"Erro ao confirmar fechamento: {error}")
+                    self.db.conn.rollback()
+                    error_msg = f"Erro ao realizar fechamento: {str(error)}"
+                    print(error_msg)
                     self.page.show_snack_bar(
                         ft.SnackBar(
-                            content=ft.Text("Erro ao realizar fechamento!"),
+                            content=ft.Text(error_msg),
                             bgcolor=ft.colors.RED
                         )
                     )
@@ -430,18 +445,19 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
         try:
             from reportlab.lib import colors
             from reportlab.lib.pagesizes import A4
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.units import inch, cm
-            from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-            import os
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            from pathlib import Path
+            from datetime import datetime
             
             # Criar diretório para PDFs se não existir
             pdf_dir = Path("pdfs")
             pdf_dir.mkdir(exist_ok=True)
             
-            # Nome do arquivo com timestamp
-            filename = pdf_dir / f"fechamento_caixa_{fechamento_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            # Nome do arquivo com usuário e timestamp
+            nome_usuario = self.usuario.get('nome', 'usuario').replace(' ', '_').lower()
+            filename = pdf_dir / f"fechamento_caixa_{nome_usuario}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             
             # Configurações do documento
             doc = SimpleDocTemplate(
@@ -461,7 +477,7 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 fontSize=16,
                 spaceAfter=30,
                 alignment=TA_CENTER,
-                textColor=colors.HexColor('#1a237e')  # Azul escuro
+                textColor=colors.HexColor('#1a237e')
             ))
             
             styles.add(ParagraphStyle(
@@ -470,7 +486,7 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 fontSize=14,
                 spaceAfter=20,
                 alignment=TA_CENTER,
-                textColor=colors.HexColor('#283593')  # Azul médio
+                textColor=colors.HexColor('#283593')
             ))
             
             styles.add(ParagraphStyle(
@@ -478,36 +494,15 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 parent=styles['Normal'],
                 fontSize=11,
                 spaceAfter=5,
-                alignment=TA_LEFT,
-                textColor=colors.HexColor('#424242')  # Cinza escuro
+                alignment=TA_LEFT
             ))
             
+            # Inicializar elementos do PDF
             elements = []
-
-            # Logo da empresa (se existir)
-            logo_path = "assets/logo.png"  # Ajuste o caminho conforme necessário
-            if os.path.exists(logo_path):
-                img = Image(logo_path)
-                img.drawHeight = 1.5*inch
-                img.drawWidth = 1.5*inch
-                elements.append(img)
             
             # Título
             elements.append(Paragraph("FECHAMENTO DE CAIXA", styles['TitleStyle']))
-            
-            # Informações da empresa
-            empresa_info = self.db.fetchone("SELECT * FROM printer_config LIMIT 1")
-            if empresa_info:
-                # Adicionar informações da empresa diretamente
-                elements.append(Paragraph(f"<b>{empresa_info['empresa']}</b>", styles['InfoStyle']))
-                if empresa_info['endereco']:
-                    elements.append(Paragraph(f"{empresa_info['endereco']}", styles['InfoStyle']))
-                if empresa_info['telefone']:
-                    elements.append(Paragraph(f"Tel: {empresa_info['telefone']}", styles['InfoStyle']))
-                if empresa_info['nuit']:
-                    elements.append(Paragraph(f"NUIT: {empresa_info['nuit']}", styles['InfoStyle']))
-            
-            elements.append(Spacer(1, 20))
+            elements.append(Spacer(1, 10))
             
             # Informações do fechamento em uma tabela
             info_data = [
@@ -519,76 +514,209 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
             info_table = Table(info_data, colWidths=[150, 300])
             info_table.setStyle(TableStyle([
                 ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 0), (-1, -1), 11),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                ('ALIGN', (1, 0), (1, -1), 'LEFT'),
                 ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#424242')),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
             ]))
             elements.append(info_table)
+            
+            # Adicionar espaço
             elements.append(Spacer(1, 20))
             
-            # Resumo das vendas
-            elements.append(Paragraph("RESUMO DAS VENDAS", styles['SubtitleStyle']))
+            # Tabela de resumo de vendas
+            elements.append(Paragraph("RESUMO DE VENDAS", styles['SubtitleStyle']))
             
-            # Tabela de formas de pagamento
-            data = [['Forma de Pagamento', 'Qtd. Vendas', 'Sistema (MT)', 'Informado (MT)', 'Diferença (MT)']]
+            # Buscar produtos vendidos no dia
+            produtos_vendidos = self.db.fetchall("""
+                SELECT p.nome, SUM(iv.quantidade) as quantidade, 
+                       p.preco_venda, SUM(iv.subtotal) as total
+                FROM itens_venda iv
+                JOIN produtos p ON iv.produto_id = p.id
+                JOIN vendas v ON iv.venda_id = v.id
+                WHERE DATE(v.data_venda) = DATE('now')
+                AND v.status = 'Concluída'
+                GROUP BY p.id, p.nome, p.preco_venda
+                ORDER BY quantidade DESC
+            """)
+            
+            # Dados da tabela com produtos vendidos
+            data = [
+                ['Forma de Pagamento', 'Qtd. Vendas', 'Total (MT)', 'Produtos Vendidos']
+            ]
+            
+            # Calcular totais
             total_vendas = 0
             total_sistema = 0
             
+            # Adicionar formas de pagamento
             for forma in dados_fechamento['formas_pagamento']:
                 total_vendas += forma['quantidade_vendas']
                 total_sistema += forma['valor_sistema']
+                
+                # Buscar produtos vendidos para esta forma de pagamento
+                produtos_forma = self.db.fetchall("""
+                    SELECT p.nome, SUM(iv.quantidade) as quantidade
+                    FROM itens_venda iv
+                    JOIN produtos p ON iv.produto_id = p.id
+                    JOIN vendas v ON iv.venda_id = v.id
+                    WHERE DATE(v.data_venda) = DATE('now')
+                    AND v.status = 'Fechada'
+                    AND v.forma_pagamento = ?
+                    GROUP BY p.id, p.nome
+                    ORDER BY quantidade DESC
+                """, (forma['forma'],))
+                
+                # Formatar lista de produtos para esta forma de pagamento
+                # Limitar o tamanho do texto e adicionar quebras de linha
+                produtos_lista = []
+                for p in produtos_forma:
+                    # Limitar o nome do produto para evitar linhas muito longas
+                    nome = (p['nome'][:15] + '...') if len(p['nome']) > 15 else p['nome']
+                    produtos_lista.append(f"• {nome} ({p['quantidade']}x)")
+                
+                # Juntar com quebras de linha
+                produtos_str = '\n'.join(produtos_lista) if produtos_lista else "-"
+                
+                # Adicionar à tabela com estilo que mantém o texto dentro da célula
                 data.append([
                     forma['forma'],
                     str(forma['quantidade_vendas']),
                     f"{forma['valor_sistema']:.2f}",
-                    "________________",  # Espaço para preenchimento manual
-                    "________________"   # Espaço para preenchimento manual
+                    produtos_str
                 ])
             
-            # Linha de total
+            # Adicionar linha de total
+            total_produtos = sum(p['quantidade'] for p in produtos_vendidos)
             data.append([
                 'TOTAL',
                 str(total_vendas),
                 f"{total_sistema:.2f}",
-                "________________",  # Espaço para preenchimento manual
-                "________________"   # Espaço para preenchimento manual
+                f"{total_produtos} itens"
             ])
-
-            col_widths = [150, 80, 100, 100, 100]
+            
+            # Criar e estilizar a tabela com colunas ajustadas
+            col_widths = [120, 60, 80, 280]  # Ajuste das larguras para dar mais espaço aos produtos
             table = Table(data, colWidths=col_widths)
             table.setStyle(TableStyle([
                 # Cabeçalho
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),  # Tamanho de fonte menor
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),  # Cabeçalho em negrito
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),  # Espaçamento inferior do cabeçalho
+                ('LEFTPADDING', (0, 0), (-1, -1), 4),  # Espaçamento interno
+                ('RIGHTPADDING', (0, 0), (-1, -1), 4),  # Espaçamento interno
+                ('WORDWRAP', (3, 1), (3, -1), True),  # Quebra de linha para a coluna de produtos
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),  # Alinhamento vertical
+                ('ALIGN', (0, 0), (0, -1), 'LEFT'),  # Primeira coluna alinhada à esquerda
+                ('ALIGN', (3, 0), (3, -1), 'LEFT'),  # Coluna de produtos alinhada à esquerda
+                ('FONTSIZE', (3, 1), (3, -1), 7),  # Fonte menor para a coluna de produtos
+                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#E0E0E0')),  # Linhas da grade
+                ('ALIGN', (0, 0), (0, -1), 'LEFT'),  # Alinha a primeira coluna à esquerda
+                ('ALIGN', (3, 1), (3, -1), 'LEFT'),  # Alinha a coluna de produtos à esquerda
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 11),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
                 # Corpo da tabela
                 ('BACKGROUND', (0, 1), (-1, -2), colors.white),
                 ('TEXTCOLOR', (0, 1), (-1, -1), colors.HexColor('#424242')),
-                ('ALIGN', (0, 1), (-1, -1), 'CENTER'),
+                ('ALIGN', (1, 1), (2, -1), 'CENTER'),  # Centraliza apenas quantidade e total
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),  # Fonte um pouco menor para caber mais conteúdo
+                ('FONTSIZE', (3, 1), (3, -1), 8),  # Fonte ainda menor para a coluna de produtos
                 ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#E0E0E0')),
                 # Linha de total
                 ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E3F2FD')),
                 ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-                ('BOTTOMPADDING', (0, -1), (-1, -1), 12),
-                # Estilo para as células de preenchimento manual
-                ('LINEBELOW', (3, 1), (4, -1), 1, colors.black),  # Linha embaixo para preenchimento
-                ('TEXTCOLOR', (3, 1), (4, -1), colors.white),     # Texto branco para não aparecer
+                ('BOTTOMPADDING', (0, -1), (-1, -1), 10)
             ]))
+            
             elements.append(table)
             
+            # Lista de produtos vendidos
+            elements.append(Spacer(1, 20))
+            elements.append(Paragraph("PRODUTOS VENDIDOS", styles['SubtitleStyle']))
+            
+            # Buscar produtos vendidos no dia
+            produtos_vendidos = self.db.fetchall("""
+                SELECT p.nome, SUM(iv.quantidade) as quantidade, 
+                       p.preco_venda, SUM(iv.subtotal) as total
+                FROM itens_venda iv
+                JOIN produtos p ON iv.produto_id = p.id
+                JOIN vendas v ON iv.venda_id = v.id
+                WHERE DATE(v.data_venda) = DATE('now')
+                AND v.status = 'Concluída'
+                GROUP BY p.id, p.nome, p.preco_venda
+                ORDER BY quantidade DESC
+            """)
+            
+            if produtos_vendidos:
+                # Tabela de produtos vendidos
+                produtos_data = [['Produto', 'Qtd', 'Preço Unit.', 'Total']]
+                
+                for produto in produtos_vendidos:
+                    produtos_data.append([
+                        produto['nome'],
+                        str(produto['quantidade']),
+                        f"{produto['preco_venda']:.2f}",
+                        f"{produto['total']:.2f}"
+                    ])
+                
+                # Calcular totais
+                total_qtd = sum(p['quantidade'] for p in produtos_vendidos)
+                total_geral = sum(p['total'] for p in produtos_vendidos)
+                
+                produtos_data.append([
+                    'TOTAL',
+                    str(total_qtd),
+                    '',
+                    f"{total_geral:.2f}"
+                ])
+                
+                # Estilo da tabela de produtos
+                col_widths = [250, 50, 100, 100]
+                produtos_table = Table(produtos_data, colWidths=col_widths)
+                table_style = [
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4472C4')),  # Cabeçalho azul
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),  # Texto do cabeçalho branco
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  # Alinhamento centralizado
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),  # Fonte do cabeçalho em negrito
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),  # Tamanho da fonte do cabeçalho
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),  # Espaçamento inferior do cabeçalho
+                    ('BACKGROUND', (0, 1), (-1, -2), colors.HexColor('#F2F2F2')),  # Cor de fundo das linhas
+                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),  # Cor do texto
+                    ('FONTSIZE', (0, 1), (-1, -1), 8),  # Tamanho da fonte das células
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),  # Alinhamento à esquerda para a primeira coluna
+                    ('ALIGN', (-1, 0), (-1, -1), 'LEFT'),  # Alinhamento à esquerda para a última coluna
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#D9D9D9')),  # Linhas da grade
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),  # Alinhamento vertical
+                    ('LEFTPADDING', (0, 0), (-1, -1), 3),  # Espaçamento à esquerda
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 3),  # Espaçamento à direita
+                    ('TOPPADDING', (0, 0), (-1, -1), 3),  # Espaçamento superior
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 3),  # Espaçamento inferior
+                    ('WORDWRAP', (3, 0), (3, -1), True),  # Quebra de linha para a coluna de produtos
+                    ('FONTSIZE', (3, 0), (3, -1), 7),  # Fonte menor para a coluna de produtos
+                    ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E3F2FD')),
+                    ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                    ('BOTTOMPADDING', (0, -1), (-1, -1), 12)
+                ]
+                produtos_table.setStyle(TableStyle(table_style))
+                
+                elements.append(produtos_table)
+            
             # Observações
-            if dados_fechamento['observacoes']:
+            if 'observacoes' in dados_fechamento and dados_fechamento['observacoes']:
                 elements.append(Spacer(1, 20))
                 elements.append(Paragraph("OBSERVAÇÕES", styles['SubtitleStyle']))
                 elements.append(Paragraph(dados_fechamento['observacoes'], styles['InfoStyle']))
             
             # Assinaturas
-            elements.append(Spacer(1, 50))
+            elements.append(Spacer(1, 30))
             
             signatures = Table([
                 ['_' * 30, '_' * 30],
@@ -603,7 +731,7 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 ('TEXTCOLOR', (0, 1), (-1, 1), colors.HexColor('#424242')),
             ]))
             elements.append(signatures)
-
+            
             # Gerar o PDF
             doc.build(elements)
             print(f"PDF gerado com sucesso: {filename}")
@@ -615,85 +743,76 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
             traceback.print_exc()
             return False
 
+    def _mostrar_dialogo_reset_cards(self, dlg, dados_fechamento):
+        """Método mantido para compatibilidade, mas não é mais usado"""
+        # Este método é mantido apenas para compatibilidade, mas não faz mais nada
+        # O comportamento de reset de cards agora é gerenciado automaticamente
+        pass
+
     def _confirmar_fechamento(self, e, dlg, campos_valores, total_sistema, observacoes):
         """Confirma o fechamento de caixa e gera o PDF"""
         try:
+            # Calcular o total informado somando os valores do sistema
+            total_informado = sum(dados['sistema'] for dados in campos_valores.values())
+            
             dados_fechamento = {
                 'usuario_id': self.usuario['id'],
                 'data_fechamento': datetime.now(),
                 'valor_sistema': total_sistema,
-                'valor_informado': 0,
-                'diferenca': 0,
-                'observacoes': observacoes.value,
+                'valor_informado': total_informado,
+                'diferenca': 0,  # Sem diferença pois não é mais editável
+                'observacoes': observacoes.value if hasattr(observacoes, 'value') else '',
                 'formas_pagamento': []
             }
 
-            total_informado = 0
             for forma, dados in campos_valores.items():
-                valor_informado = float(dados['campo'].value or 0)
-                total_informado += valor_informado
-                diferenca = valor_informado - dados['sistema']
+                # Usar o valor do sistema já que não é mais editável
+                valor_informado = dados['sistema']
                 
                 dados_fechamento['formas_pagamento'].append({
                     'forma': forma,
                     'valor_sistema': dados['sistema'],
                     'valor_informado': valor_informado,
-                    'diferenca': diferenca,
+                    'diferenca': 0,  # Sem diferença pois não é mais editável
                     'quantidade_vendas': dados['quantidade']
                 })
 
-            dados_fechamento['valor_informado'] = total_informado
-            dados_fechamento['diferenca'] = total_informado - total_sistema
-
-            try:
-                # Registrar fechamento
-                fechamento_id = self.db.registrar_fechamento(dados_fechamento)
-                
-                # Atualizar status das vendas
-                self.db.execute("""
-                    UPDATE vendas 
-                    SET status = 'Fechada'
-                    WHERE usuario_id = ? 
-                    AND DATE(data_venda) = DATE('now')
-                    AND (status IS NULL OR status != 'Anulada')
-                    AND status != 'Fechada'
-                """, (self.usuario['id'],))
-                
-                # Gerar PDF
-                if self.gerar_pdf_fechamento(dados_fechamento, fechamento_id):
-                    self.db.conn.commit()  # Commit somente se tudo der certo
-                    dlg.open = False
-                    self.page.update()
-
-                    self.page.show_snack_bar(
-                        ft.SnackBar(
-                            content=ft.Text("Fechamento realizado com sucesso! PDF gerado."),
-                            bgcolor=ft.colors.GREEN
-                        )
-                    )
-                    
-                    # Atualizar a lista de vendas
-                    self.carregar_vendas()
-                else:
-                    self.db.conn.rollback()  # Rollback se falhar ao gerar PDF
-                    raise Exception("Erro ao gerar PDF")
-
-            except Exception as e:
-                self.db.conn.rollback()  # Rollback em caso de qualquer erro
-                raise e
-
-        except ValueError:
+            # Registrar fechamento
+            fechamento_id = self.db.registrar_fechamento(dados_fechamento)
+            
+            # Atualizar status de todas as vendas não fechadas
+            self.db.execute("""
+                UPDATE vendas 
+                SET status = 'Fechada'
+                WHERE usuario_id = ?
+                AND (status IS NULL OR status != 'Anulada')
+                AND (status IS NULL OR status != 'Fechada')
+            """, (self.usuario['id'],))
+            
+            # Fechar o diálogo de fechamento
+            dlg.open = False
+            self.page.update()
+            
+            # Gerar o PDF do fechamento
+            if not self.gerar_pdf_fechamento(dados_fechamento, fechamento_id):
+                raise Exception("Erro ao gerar PDF do fechamento")
+            
+            # Mostrar mensagem de sucesso
             self.page.show_snack_bar(
                 ft.SnackBar(
-                    content=ft.Text("Por favor, insira valores válidos!"),
-                    bgcolor=ft.colors.RED
+                    content=ft.Text("Caixa fechado com sucesso!"),
+                    bgcolor=ft.colors.GREEN
                 )
             )
+            
+            # Atualizar a lista de vendas
+            self.carregar_vendas()
+
         except Exception as error:
             print(f"Erro ao confirmar fechamento: {error}")
             self.page.show_snack_bar(
                 ft.SnackBar(
-                    content=ft.Text("Erro ao realizar fechamento!"),
+                    content=ft.Text(f"Erro ao realizar fechamento: {str(error)}"),
                     bgcolor=ft.colors.RED
                 )
             )
@@ -747,6 +866,18 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
                 ft.Row([
                     self.data_inicial,
                     self.data_final,
+                    self.filtro_status,
+                    ft.ElevatedButton(
+                        "Atualizar",
+                        icon=ft.icons.SEARCH,
+                        on_click=self.carregar_vendas,
+                        style=ft.ButtonStyle(
+                            color=ft.colors.WHITE,
+                            bgcolor=ft.colors.BLUE_700
+                        )
+                    )
+                ], spacing=10, scroll=ft.ScrollMode.ALWAYS, wrap=True),
+                ft.Row([
                     ft.ElevatedButton(
                         "Atualizar",
                         icon=ft.icons.REFRESH,
@@ -797,4 +928,5 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
             filtros,
             ft.Container(height=20),
             table_container
-        ]) 
+        ])
+    # End of MinhasVendasView class

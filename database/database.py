@@ -5,6 +5,8 @@ from werkzeug.security import generate_password_hash
 import os
 import hashlib
 from datetime import datetime
+import platform
+import shutil
 
 class Database:
     _instance = None
@@ -17,12 +19,18 @@ class Database:
 
     def __init__(self):
         if not hasattr(self, 'initialized'):
-            # Garante que o diretório database existe no diretório raiz do projeto
-            db_dir = Path(os.path.dirname(os.path.dirname(__file__))) / 'database'
-            db_dir.mkdir(exist_ok=True)
+            # Definir localização única do banco de dados (APPDATA)
+            sistema = platform.system().lower()
+            if sistema == 'windows' and 'APPDATA' in os.environ:
+                app_data_db_dir = Path(os.environ['APPDATA']) / 'SistemaGestao' / 'database'
+            else:
+                app_data_db_dir = Path(os.path.expanduser('~')) / '.sistemagestao' / 'database'
+
+            # Garantir que o diretório existe
+            app_data_db_dir.mkdir(parents=True, exist_ok=True)
             
-            # Caminho absoluto para o banco de dados
-            self.db_path = db_dir / 'sistema.db'
+            # Caminho único e fixo para o banco de dados
+            self.db_path = app_data_db_dir / 'sistema.db'
             
             # Conexão com o banco de dados
             self.conn = sqlite3.connect(str(self.db_path.absolute()), check_same_thread=False)
@@ -31,8 +39,100 @@ class Database:
             # Inicializa as tabelas
             self._init_database()
             self.initialized = True
+            
+            print(f"[DATABASE] Banco de dados inicializado em: {self.db_path}")
 
+    def registrar_fechamento(self, dados_fechamento):
+        """
+        Registra um novo fechamento de caixa no banco de dados.
+        
+        Args:
+            dados_fechamento (dict): Dicionário contendo os dados do fechamento
+                - usuario_id (int): ID do usuário que está realizando o fechamento
+                - valor_sistema (float): Valor total calculado pelo sistema
+                - valor_informado (float): Valor informado pelo usuário
+                - diferenca (float): Diferença entre o valor informado e o valor do sistema
+                - observacoes (str, optional): Observações sobre o fechamento
+                - formas_pagamento (list): Lista de dicionários com os dados por forma de pagamento
+                    - forma (str): Nome da forma de pagamento
+                    - valor_sistema (float): Valor calculado pelo sistema
+                    - valor_informado (float): Valor informado pelo usuário
+                    - diferenca (float): Diferença entre os valores
+                    - quantidade_vendas (int): Quantidade de vendas com esta forma de pagamento
+        
+        Returns:
+            int: ID do fechamento registrado ou None em caso de erro
+        """
+        try:
+            with self.conn:
+                cursor = self.conn.cursor()
+                
+                # Inserir o fechamento principal
+                cursor.execute("""
+                    INSERT INTO fechamentos_caixa (
+                        usuario_id, 
+                        data_fechamento, 
+                        valor_sistema, 
+                        valor_informado, 
+                        diferenca, 
+                        observacoes,
+                        status
+                    ) VALUES (?, datetime('now'), ?, ?, ?, ?, 'Concluído')
+                """, (
+                    dados_fechamento['usuario_id'],
+                    dados_fechamento['valor_sistema'],
+                    dados_fechamento['valor_informado'],
+                    dados_fechamento['diferenca'],
+                    dados_fechamento.get('observacoes', '')
+                ))
+                
+                fechamento_id = cursor.lastrowid
+                
+                # Inserir os detalhes por forma de pagamento
+                for forma_pagamento in dados_fechamento.get('formas_pagamento', []):
+                    cursor.execute("""
+                        INSERT INTO fechamentos_formas_pagamento (
+                            fechamento_id,
+                            forma_pagamento,
+                            valor_sistema,
+                            valor_informado,
+                            diferenca
+                        ) VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        fechamento_id,
+                        forma_pagamento['forma'],
+                        forma_pagamento['valor_sistema'],
+                        forma_pagamento['valor_informado'],
+                        forma_pagamento['diferenca']
+                    ))
+                
+                return fechamento_id
+                
+        except Exception as e:
+            print(f"Erro ao registrar fechamento: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def recarregar_conexao(self):
+        """Fecha a conexão atual e reconecta ao banco de dados"""
+        try:
+            if hasattr(self, 'conn'):
+                self.conn.close()
+            
+            # Reconecta ao banco de dados
+            self.conn = sqlite3.connect(str(self.db_path.absolute()), check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            
+            # Verifica se o banco de dados está íntegro
+            self._init_database()
+            return True
+        except Exception as e:
+            print(f"Erro ao recarregar conexão com o banco de dados: {e}")
+            return False
+            
     def _init_database(self):
+        """Inicializa o banco de dados criando as tabelas necessárias se não existirem"""
         try:
             cursor = self.conn.cursor()
             
@@ -47,6 +147,47 @@ class Database:
                 ativo INTEGER NOT NULL DEFAULT 1,
                 is_admin INTEGER NOT NULL DEFAULT 0,
                 salario REAL DEFAULT 0,
+                pode_abastecer INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            
+            # Adicionar coluna pode_abastecer se não existir
+            try:
+                cursor.execute('ALTER TABLE usuarios ADD COLUMN pode_abastecer INTEGER NOT NULL DEFAULT 0')
+                self.conn.commit()
+                print("Coluna 'pode_abastecer' adicionada à tabela usuarios")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    print("Coluna 'pode_abastecer' já existe na tabela usuarios")
+                else:
+                    print(f"Erro ao adicionar coluna pode_abastecer: {e}")
+            
+            # Adicionar coluna pode_gerenciar_despesas se não existir
+            try:
+                cursor.execute('ALTER TABLE usuarios ADD COLUMN pode_gerenciar_despesas INTEGER NOT NULL DEFAULT 0')
+                self.conn.commit()
+                print("Coluna 'pode_gerenciar_despesas' adicionada à tabela usuarios")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    print("Coluna 'pode_gerenciar_despesas' já existe na tabela usuarios")
+                else:
+                    print(f"Erro ao adicionar coluna pode_gerenciar_despesas: {e}")
+            
+            self.conn.commit()
+
+            # Criar tabela de clientes
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                nuit TEXT,
+                telefone TEXT,
+                email TEXT,
+                endereco TEXT,
+                especial INTEGER DEFAULT 0,
+                desconto_divida REAL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -68,28 +209,77 @@ class Database:
             
             if 'especial' not in colunas_nomes:
                 cursor.execute("ALTER TABLE clientes ADD COLUMN especial INTEGER DEFAULT 0")
-                self.conn.commit()
+                
+            # Criar tabela de configuracoes se não existir
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS configuracoes (
+                chave TEXT PRIMARY KEY,
+                valor TEXT,
+                descricao TEXT,
+                atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            self.conn.commit()
+            
+            # Inserir configuração padrão para o dashboard reset se não existir
+            cursor.execute("""
+                INSERT OR IGNORE INTO configuracoes (chave, valor, descricao)
+                VALUES ('dashboard_reset_timestamp', '2000-01-01 00:00:00', 
+                        'Último reset do dashboard (formato: YYYY-MM-DD HH:MM:SS)')
+            """)
+            self.conn.commit()
                 
             if 'desconto_divida' not in colunas_nomes:
                 cursor.execute("ALTER TABLE clientes ADD COLUMN desconto_divida REAL DEFAULT 0")
                 self.conn.commit()
 
-            # Verificar e adicionar colunas de desconto na tabela dividas
-            cursor.execute("PRAGMA table_info(dividas)")
-            colunas = cursor.fetchall()
-            colunas_nomes = [coluna[1] for coluna in colunas]
+# Tabela de dívidas
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dividas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cliente_id INTEGER NOT NULL,
+                    data_divida TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    valor_total REAL NOT NULL,
+                    valor_original REAL DEFAULT 0,
+                    desconto_aplicado REAL DEFAULT 0,
+                    percentual_desconto REAL DEFAULT 0,
+                    valor_pago REAL DEFAULT 0,
+                    status TEXT DEFAULT 'Pendente',
+                    observacao TEXT,
+                    usuario_id INTEGER NOT NULL,
+                    FOREIGN KEY (cliente_id) REFERENCES clientes(id),
+                    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                )
+            """)
             
-            if 'valor_original' not in colunas_nomes:
-                cursor.execute("ALTER TABLE dividas ADD COLUMN valor_original REAL DEFAULT 0")
-                self.conn.commit()
-                
-            if 'desconto_aplicado' not in colunas_nomes:
-                cursor.execute("ALTER TABLE dividas ADD COLUMN desconto_aplicado REAL DEFAULT 0")
-                self.conn.commit()
-                
-            if 'percentual_desconto' not in colunas_nomes:
-                cursor.execute("ALTER TABLE dividas ADD COLUMN percentual_desconto REAL DEFAULT 0")
-                self.conn.commit()
+            # Tabela de itens da dívida
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS itens_divida (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    divida_id INTEGER NOT NULL,
+                    produto_id INTEGER NOT NULL,
+                    quantidade REAL NOT NULL,
+                    preco_unitario REAL NOT NULL,
+                    subtotal REAL NOT NULL,
+                    peso_kg REAL DEFAULT 0,
+                    FOREIGN KEY (divida_id) REFERENCES dividas(id),
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id)
+                )
+            """)
+            
+            # Tabela de pagamentos
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pagamentos_divida (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    divida_id INTEGER NOT NULL,
+                    data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    valor REAL NOT NULL,
+                    forma_pagamento TEXT NOT NULL,
+                    usuario_id INTEGER NOT NULL,
+                    FOREIGN KEY (divida_id) REFERENCES dividas(id),
+                    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                )
+            """)
 
             # Criar usuário admin padrão apenas se não existir
             cursor.execute('SELECT COUNT(*) FROM usuarios WHERE usuario = ?', ('admin',))
@@ -109,21 +299,7 @@ class Database:
                 self.conn.commit()
                 print("Usuário admin criado com sucesso!")
 
-            # Criar tabela de clientes
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS clientes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nome TEXT NOT NULL,
-                nuit TEXT,
-                telefone TEXT,
-                email TEXT,
-                endereco TEXT,
-                especial INTEGER DEFAULT 0,
-                desconto_divida REAL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
+            # (Removido: DDL duplicada de clientes)
 
             # Criar tabela de categorias
             cursor.execute('''
@@ -160,6 +336,58 @@ class Database:
                 self.conn.commit()
                 print("Categorias padrão criadas com sucesso!")
 
+            # Criar tabela de fornecedores
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS fornecedores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nome TEXT NOT NULL,
+                telefone TEXT,
+                email TEXT,
+                endereco TEXT,
+                cnpj TEXT,
+                ativo INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
+            # Inserir fornecedor padrão
+            cursor.execute('''
+                INSERT OR IGNORE INTO fornecedores (id, nome, ativo)
+                VALUES (1, 'Fornecedor Padrão', 1)
+            ''')
+
+            # Criar tabela de compras
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS compras (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fornecedor TEXT NOT NULL,
+                valor_total REAL NOT NULL,
+                usuario_id INTEGER NOT NULL,
+                observacoes TEXT,
+                data_compra TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+            )
+            ''')
+
+            # Criar tabela de itens da compra
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS compra_itens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                compra_id INTEGER NOT NULL,
+                produto_id INTEGER,
+                produto_nome TEXT NOT NULL,
+                quantidade REAL NOT NULL,
+                preco_unitario REAL NOT NULL,
+                preco_venda REAL NOT NULL,
+                lucro_unitario REAL NOT NULL,
+                lucro_total REAL NOT NULL,
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (compra_id) REFERENCES compras(id) ON DELETE CASCADE,
+                FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE SET NULL
+            )
+            ''')
+
             # Criar tabela de produtos
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS produtos (
@@ -169,24 +397,26 @@ class Database:
                 descricao TEXT,
                 preco_custo REAL NOT NULL,
                 preco_venda REAL NOT NULL,
-                estoque INTEGER NOT NULL DEFAULT 0,
-                estoque_minimo INTEGER NOT NULL DEFAULT 0,
+                estoque REAL NOT NULL DEFAULT 0,
+                estoque_minimo REAL NOT NULL DEFAULT 0,
                 ativo INTEGER NOT NULL DEFAULT 1,
                 venda_por_peso INTEGER DEFAULT 0,
                 unidade_medida TEXT DEFAULT 'un',
                 categoria_id INTEGER,
+                fornecedor_id INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (categoria_id) REFERENCES categorias (id)
+                FOREIGN KEY (categoria_id) REFERENCES categorias (id),
+                FOREIGN KEY (fornecedor_id) REFERENCES fornecedores (id)
             )
             ''')
 
-            # Verificar se a coluna categoria_id existe
+            # Verificar e adicionar colunas ausentes na tabela produtos
             cursor.execute("PRAGMA table_info(produtos)")
             colunas = cursor.fetchall()
             colunas_nomes = [coluna[1] for coluna in colunas]
             
-            # Se a coluna categoria_id não existir, adiciona
+            # Adicionar categoria_id se não existir
             if 'categoria_id' not in colunas_nomes:
                 try:
                     cursor.execute("""
@@ -198,6 +428,69 @@ class Database:
                 except Exception as e:
                     self.conn.rollback()
                     print(f"Erro ao adicionar coluna categoria_id: {e}")
+            
+            # Adicionar fornecedor_id se não existir
+            if 'fornecedor_id' not in colunas_nomes:
+                try:
+                    cursor.execute("""
+                        ALTER TABLE produtos
+                        ADD COLUMN fornecedor_id INTEGER DEFAULT 1 REFERENCES fornecedores(id)
+                    """)
+                    self.conn.commit()
+                    print("Coluna fornecedor_id adicionada com sucesso!")
+                except Exception as e:
+                    self.conn.rollback()
+                    print(f"Erro ao adicionar coluna fornecedor_id: {e}")
+            
+            # Verificar se há coluna temporária temp_estoque e restaurar dados se necessário
+            cursor.execute("PRAGMA table_info(produtos)")
+            colunas = cursor.fetchall()
+            temp_estoque_exists = any(c[1] == 'temp_estoque' for c in colunas)
+            
+            if temp_estoque_exists:
+                print("Encontrada coluna temp_estoque - restaurando dados...")
+                try:
+                    # Verificar se há dados na coluna temporária
+                    cursor.execute("SELECT COUNT(*) FROM produtos WHERE temp_estoque > 0")
+                    temp_estoque_count = cursor.fetchone()[0]
+                    
+                    if temp_estoque_count > 0:
+                        print(f"Restaurando {temp_estoque_count} produtos com dados temporários")
+                        # Transferir dados da coluna temporária para a coluna principal
+                        cursor.execute("SELECT id, temp_estoque FROM produtos WHERE temp_estoque > 0")
+                        dados_temp = cursor.fetchall()
+                        
+                        for produto in dados_temp:
+                            cursor.execute("UPDATE produtos SET estoque = ? WHERE id = ?", 
+                                         (float(produto[1]), produto[0]))
+                    
+                    # Remover coluna temporária
+                    cursor.execute("ALTER TABLE produtos DROP COLUMN temp_estoque")
+                    self.conn.commit()
+                    print("Dados de estoque restaurados com sucesso!")
+                except Exception as e:
+                    print(f"Erro geral ao processar coluna temp_estoque: {e}")
+            
+            # Verificar e remover índices problemáticos
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND sql LIKE '%temp_estoque%'")
+            indices_problema = cursor.fetchall()
+            
+            for idx in indices_problema:
+                try:
+                    cursor.execute(f"DROP INDEX {idx[0]}")
+                    print(f"Índice problemático {idx[0]} removido")
+                except Exception as e:
+                    print(f"Erro ao remover índice {idx[0]}: {e}")
+            
+            # Recriar índice de estoque se necessário
+            try:
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_produtos_estoque 
+                    ON produtos(estoque, ativo)
+                """)
+                print("Índice de estoque verificado/criado")
+            except Exception as e:
+                print(f"Erro ao verificar índice de estoque: {e}")
 
             # Criar tabela de vendas
             cursor.execute('''
@@ -377,34 +670,7 @@ class Database:
                 except:
                     pass  # Ignora se a categoria já existe
 
-            # Create financial reports tables
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS contas_pagar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    descricao TEXT NOT NULL,
-                    valor REAL NOT NULL,
-                    data_vencimento DATE NOT NULL,
-                    data_pagamento DATE,
-                    categoria TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'Pendente',  -- 'Pendente' ou 'Pago'
-                    observacao TEXT,
-                    usuario_id INTEGER,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-                )
-            """)
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS movimentacao_caixa (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data_movimento DATETIME NOT NULL,
-                    tipo TEXT NOT NULL,  -- 'Entrada' ou 'Saída'
-                    valor REAL NOT NULL,
-                    descricao TEXT NOT NULL,
-                    categoria TEXT,
-                    usuario_id INTEGER,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-                )
-            """)
+            # (Removido: DDL duplicada de contas_pagar e movimentacao_caixa)
 
             # Create trigger for sales
             cursor.execute("""
@@ -554,53 +820,22 @@ class Database:
                 except:
                     pass  # Ignora se já existe
 
-            # Tabela de dívidas
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS dividas (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cliente_id INTEGER NOT NULL,
-                    data_divida TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    valor_total REAL NOT NULL,
-                    valor_original REAL DEFAULT 0,
-                    desconto_aplicado REAL DEFAULT 0,
-                    percentual_desconto REAL DEFAULT 0,
-                    valor_pago REAL DEFAULT 0,
-                    status TEXT DEFAULT 'Pendente',
-                    observacao TEXT,
-                    usuario_id INTEGER NOT NULL,
-                    FOREIGN KEY (cliente_id) REFERENCES clientes(id),
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
-                )
-            """)
-
-            # Tabela de itens da dívida
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS itens_divida (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    divida_id INTEGER NOT NULL,
-                    produto_id INTEGER NOT NULL,
-                    quantidade REAL NOT NULL,
-                    preco_unitario REAL NOT NULL,
-                    subtotal REAL NOT NULL,
-                    peso_kg REAL DEFAULT 0,
-                    FOREIGN KEY (divida_id) REFERENCES dividas(id),
-                    FOREIGN KEY (produto_id) REFERENCES produtos(id)
-                )
-            """)
-
-            # Tabela de pagamentos
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS pagamentos_divida (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    divida_id INTEGER NOT NULL,
-                    data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    valor REAL NOT NULL,
-                    forma_pagamento TEXT NOT NULL,
-                    usuario_id INTEGER NOT NULL,
-                    FOREIGN KEY (divida_id) REFERENCES dividas(id),
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
-                )
-            """)
+            # Verificar e adicionar colunas de desconto na tabela dividas
+            cursor.execute("PRAGMA table_info(dividas)")
+            colunas = cursor.fetchall()
+            colunas_nomes = [coluna[1] for coluna in colunas]
+            
+            if 'valor_original' not in colunas_nomes:
+                cursor.execute("ALTER TABLE dividas ADD COLUMN valor_original REAL DEFAULT 0")
+                self.conn.commit()
+                
+            if 'desconto_aplicado' not in colunas_nomes:
+                cursor.execute("ALTER TABLE dividas ADD COLUMN desconto_aplicado REAL DEFAULT 0")
+                self.conn.commit()
+                
+            if 'percentual_desconto' not in colunas_nomes:
+                cursor.execute("ALTER TABLE dividas ADD COLUMN percentual_desconto REAL DEFAULT 0")
+                self.conn.commit()
 
             # Verificar e adicionar novas colunas na tabela vendas
             cursor.execute("PRAGMA table_info(vendas)")
@@ -660,20 +895,16 @@ class Database:
                     ADD COLUMN desconto_aplicado_divida REAL DEFAULT 0
                 """)
             
-            # Criar trigger para quando uma dívida for quitada
+            # Criar trigger para quando uma dívida for quitada (sem a inserção problemática)
             cursor.execute("""
                 CREATE TRIGGER IF NOT EXISTS after_divida_quitada
                 AFTER UPDATE ON dividas
                 WHEN NEW.status = 'Quitado' AND OLD.status = 'Pendente'
                 BEGIN
-                    -- Log para debug
-                    INSERT INTO sqlite_master (type, name, sql) VALUES ('TRIGGER_LOG', 'divida_quitada', 
-                        'Dívida ' || NEW.id || ' quitada - criando venda correspondente');
-                    
                     -- Inserir na tabela de vendas (sem afetar estoque)
-                    INSERT INTO vendas (
+                    INSERT INTO vendas ( 
                         usuario_id,
-                        total,
+                        valor_total,
                         forma_pagamento,
                         valor_recebido,
                         troco,
@@ -714,7 +945,7 @@ class Database:
                         id.preco_unitario,
                         (SELECT preco_custo FROM produtos WHERE id = id.produto_id),
                         id.subtotal,
-                        id.peso_kg
+                        COALESCE(id.peso_kg, 0)
                     FROM itens_divida id
                     WHERE id.divida_id = NEW.id;
                 END
@@ -723,7 +954,7 @@ class Database:
             # Adicionar índices para melhorar performance de busca
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_produtos_busca 
-                ON produtos(nome, codigo, ativo)
+                ON produtos(nome, ativo)
             """)
             
             cursor.execute("""
@@ -731,6 +962,9 @@ class Database:
                 ON produtos(estoque, ativo)
             """)
 
+            # Migração automática para backups antigos
+            self._verificar_migracao_valor_total(cursor)
+            
             # Verificar se a coluna venda_por_peso existe
             cursor.execute("PRAGMA table_info(produtos)")
             colunas = cursor.fetchall()
@@ -810,17 +1044,315 @@ class Database:
                 END
             """)
 
+            # Tabela de retiradas de caixa (uma única definição)
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS retiradas_caixa (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                usuario_id INTEGER NOT NULL,
+                aprovador_id INTEGER,
+                valor REAL NOT NULL,
+                motivo TEXT NOT NULL,
+                observacao TEXT,
+                origem TEXT NOT NULL DEFAULT 'vendas',
+                status TEXT NOT NULL DEFAULT 'pendente',
+                data_retirada TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                data_aprovacao TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios(id),
+                FOREIGN KEY (aprovador_id) REFERENCES usuarios(id)
+            )
+            ''')
+            
+            # Criar trigger para atualização automática do updated_at
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS retiradas_caixa_updated_at 
+                AFTER UPDATE ON retiradas_caixa
+                BEGIN
+                    UPDATE retiradas_caixa 
+                    SET updated_at = datetime('now', 'localtime') 
+                    WHERE id = NEW.id;
+                END
+            ''')
+            
             self.conn.commit()
+            print("Banco de dados inicializado com sucesso!")
+            
+            # Verificar e corrigir esquema se necessário (especialmente após restauração)
+            try:
+                self.verificar_e_corrigir_esquema_pos_restauracao()
+            except Exception as e:
+                print("Banco de dados inicializado com sucesso!")
+            
         except Exception as e:
             print(f"Erro ao inicializar banco de dados: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+    def _verificar_migracao_valor_total(self, cursor):
+        """Verifica e corrige automaticamente backups antigos sem valor_total"""
+        try:
+            # Verificar se a coluna valor_total existe na tabela vendas
+            cursor.execute("PRAGMA table_info(vendas)")
+            colunas = cursor.fetchall()
+            colunas_nomes = [col[1] for col in colunas]
+            
+            # Verificar se precisa de migração completa
+            precisa_migracao = 'valor_total' not in colunas_nomes
+            
+            # Verificar se a coluna 'total' tem constraint NOT NULL
+            total_col_info = None
+            for col in colunas:
+                if col[1] == 'total':
+                    total_col_info = col
+                    break
+            
+            # Verificar se o trigger after_venda_insert precisa ser corrigido
+            cursor.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='after_venda_insert'")
+            trigger_atual = cursor.fetchone()
+            trigger_precisa_correcao = False
+            
+            if trigger_atual and 'NEW.total' in trigger_atual[0] and 'COALESCE' not in trigger_atual[0]:
+                trigger_precisa_correcao = True
+                print("[MIGRACAO] Trigger after_venda_insert precisa ser corrigido")
+            
+            # Se total tem NOT NULL ou não existe valor_total ou trigger precisa correção, fazer migração completa
+            if precisa_migracao or (total_col_info and total_col_info[3]) or trigger_precisa_correcao:
+                print("[MIGRACAO] Backup antigo detectado - corrigindo estrutura...")
+                
+                # Limpar tabela temporária se existir
+                cursor.execute("DROP TABLE IF EXISTS vendas_temp")
+                
+                # Criar tabela temporária
+                cursor.execute("CREATE TABLE vendas_temp AS SELECT * FROM vendas")
+                cursor.execute("DROP TABLE vendas")
+                
+                # Recriar tabela com estrutura corrigida
+                cursor.execute("""
+                    CREATE TABLE vendas (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario_id INTEGER NOT NULL,
+                        total REAL,
+                        forma_pagamento TEXT,
+                        valor_recebido REAL,
+                        troco REAL,
+                        data_venda DATETIME DEFAULT (datetime('now', 'localtime')),
+                        status TEXT DEFAULT 'Concluida',
+                        motivo_alteracao TEXT,
+                        alterado_por INTEGER,
+                        data_alteracao TIMESTAMP,
+                        origem TEXT,
+                        valor_original_divida REAL,
+                        desconto_aplicado_divida REAL,
+                        valor_total REAL,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios (id),
+                        FOREIGN KEY (alterado_por) REFERENCES usuarios (id)
+                    )
+                """)
+                
+                # Restaurar dados
+                cursor.execute("INSERT INTO vendas SELECT * FROM vendas_temp")
+                cursor.execute("DROP TABLE vendas_temp")
+                
+                # Migrar dados se necessário
+                if precisa_migracao:
+                    cursor.execute("UPDATE vendas SET valor_total = COALESCE(total, 0) WHERE valor_total IS NULL")
+                    print("[MIGRACAO] Dados migrados para 'valor_total'")
+                
+                # Corrigir triggers
+                cursor.execute("DROP TRIGGER IF EXISTS after_divida_quitada")
+                cursor.execute("""
+                    CREATE TRIGGER after_divida_quitada
+                    AFTER UPDATE ON dividas
+                    WHEN NEW.status = 'Quitado' AND OLD.status = 'Pendente'
+                    BEGIN
+                        INSERT INTO vendas ( 
+                            usuario_id, valor_total, total, forma_pagamento, valor_recebido,
+                            troco, data_venda, origem, valor_original_divida, desconto_aplicado_divida
+                        )
+                        SELECT 
+                            d.usuario_id, d.valor_total, d.valor_total,
+                            (SELECT forma_pagamento FROM pagamentos_divida 
+                             WHERE divida_id = d.id ORDER BY data_pagamento DESC LIMIT 1),
+                            d.valor_total, 0, datetime('now', 'localtime'), 'divida_quitada',
+                            COALESCE(d.valor_original, d.valor_total), COALESCE(d.desconto_aplicado, 0)
+                        FROM dividas d WHERE d.id = NEW.id;
+
+                        INSERT INTO itens_venda (
+                            venda_id, produto_id, quantidade, preco_unitario,
+                            preco_custo_unitario, subtotal, peso_kg
+                        )
+                        SELECT 
+                            last_insert_rowid(), id.produto_id, id.quantidade, id.preco_unitario,
+                            (SELECT preco_custo FROM produtos WHERE id = id.produto_id),
+                            id.subtotal, COALESCE(id.peso_kg, 0)
+                        FROM itens_divida id WHERE id.divida_id = NEW.id;
+                    END
+                """)
+                
+                # Corrigir trigger de movimentação de caixa
+                cursor.execute("DROP TRIGGER IF EXISTS after_venda_insert")
+                cursor.execute("""
+                    CREATE TRIGGER after_venda_insert 
+                    AFTER INSERT ON vendas
+                    BEGIN
+                        INSERT INTO movimentacao_caixa (
+                            data_movimento,
+                            tipo,
+                            valor,
+                            descricao,
+                            usuario_id
+                        )
+                        VALUES (
+                            NEW.data_venda,
+                            'Entrada',
+                            COALESCE(NEW.valor_total, NEW.total, 0),
+                            'Venda #' || NEW.id,
+                            NEW.usuario_id
+                        );
+                    END
+                """)
+                
+                print("[MIGRACAO] Constraint NOT NULL removida da coluna 'total'")
+                print("[MIGRACAO] Triggers corrigidos para usar COALESCE")
+                print("[MIGRACAO] Backup migrado com sucesso - sistema pronto para uso!")
+            
+        except Exception as e:
+            print(f"[MIGRACAO] Erro durante migracao automatica: {e}")
+            # Não interrompe a inicialização - apenas registra o erro
+
+    def garantir_tabela_retiradas_caixa(self):
+        """Garante que a tabela retiradas_caixa exista com a estrutura correta"""
+        try:
+            cursor = self.conn.cursor()
+            
+            # Verificar se a tabela existe
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='retiradas_caixa'
+            """)
+            
+            if not cursor.fetchone():
+                print("Criando tabela retiradas_caixa...")
+                cursor.execute('''
+                    CREATE TABLE retiradas_caixa (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario_id INTEGER NOT NULL,
+                        aprovador_id INTEGER,
+                        valor REAL NOT NULL,
+                        motivo TEXT NOT NULL,
+                        observacao TEXT,
+                        origem TEXT NOT NULL DEFAULT 'vendas',
+                        status TEXT NOT NULL DEFAULT 'pendente',
+                        data_retirada TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        data_aprovacao TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios (id),
+                        FOREIGN KEY (aprovador_id) REFERENCES usuarios (id)
+                    )
+                ''')
+                
+                # Criar trigger para atualização automática do updated_at
+                cursor.execute('''
+                    CREATE TRIGGER IF NOT EXISTS retiradas_caixa_updated_at 
+                    AFTER UPDATE ON retiradas_caixa
+                    BEGIN
+                        UPDATE retiradas_caixa 
+                        SET updated_at = datetime('now', 'localtime') 
+                        WHERE id = NEW.id;
+                    END
+                ''')
+                
+                self.conn.commit()
+                print("Tabela retiradas_caixa criada com sucesso!")
+                return True
+            
+            # Verificar estrutura da tabela e adicionar colunas ausentes
+            cursor.execute("PRAGMA table_info(retiradas_caixa)")
+            columns = cursor.fetchall()
+            column_names = [column[1] for column in columns]
+            
+            # Lista de colunas necessárias com suas definições
+            colunas_necessarias = {
+                'origem': "TEXT NOT NULL DEFAULT 'vendas'",
+                'status': "TEXT NOT NULL DEFAULT 'pendente'",
+                'aprovador_id': "INTEGER REFERENCES usuarios(id)",
+                'data_aprovacao': "TIMESTAMP",
+                'motivo': "TEXT NOT NULL DEFAULT 'Retirada de caixa'",
+                'observacao': "TEXT",
+                'created_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                'updated_at': "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+            }
+            
+            for coluna, definicao in colunas_necessarias.items():
+                if coluna not in column_names:
+                    print(f"Adicionando coluna '{coluna}' à tabela retiradas_caixa...")
+                    try:
+                        cursor.execute(f"""
+                        ALTER TABLE retiradas_caixa
+                            ADD COLUMN {coluna} {definicao}
+                        """)
+                        self.conn.commit()
+                        print(f"Coluna '{coluna}' adicionada com sucesso!")
+                    except sqlite3.OperationalError as e:
+                        if "duplicate column name" not in str(e):
+                            print(f"Erro ao adicionar coluna '{coluna}': {e}")
+            
+            # Verificar se o trigger existe
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='trigger' AND name='retiradas_caixa_updated_at'
+            """)
+            
+            if not cursor.fetchone():
+                print("Criando trigger para updated_at...")
+                try:
+                    cursor.execute("""
+                        CREATE TRIGGER IF NOT EXISTS retiradas_caixa_updated_at 
+                        AFTER UPDATE ON retiradas_caixa
+                        BEGIN
+                            UPDATE retiradas_caixa 
+                            SET updated_at = datetime('now', 'localtime') 
+                            WHERE id = NEW.id;
+                        END
+                    """)
+                    self.conn.commit()
+                    print("Trigger criado com sucesso!")
+                except Exception as e:
+                    print(f"Erro ao criar trigger: {e}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Erro ao verificar/criar tabela retiradas_caixa: {str(e)}")
             self.conn.rollback()
+            return False
 
     def execute(self, sql, params=()):
         with self._lock:
             cursor = self.conn.cursor()
             cursor.execute(sql, params)
-            self.conn.commit()  # Garante que as alterações sejam salvas
-            return cursor
+            self.conn.commit()
+            return cursor.lastrowid
+            
+    def executemany(self, sql, params_list):
+        """
+        Executa uma instrução SQL várias vezes, uma para cada conjunto de parâmetros.
+        
+        Args:
+            sql (str): A instrução SQL a ser executada
+            params_list (list): Lista de tuplas contendo os parâmetros para cada execução
+            
+        Returns:
+            int: Número de linhas afetadas
+        """
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.executemany(sql, params_list)
+            self.conn.commit()
+            return cursor.rowcount
 
     def fetchone(self, sql, params=None, dictionary=False):
         """Executa uma consulta e retorna uma única linha"""
@@ -868,156 +1400,273 @@ class Database:
             print(f"get_valor_venda_estoque(): MT {valor:.2f}")
             return valor
 
-    def reset_database(self):
-        """Reseta o banco de dados para o estado inicial"""
+    def close_all_connections(self):
+        """Fecha todas as conexões com o banco de dados"""
         try:
-            # Conectar diretamente ao banco
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Deletar todas as tabelas existentes
-            cursor.executescript("""
-                PRAGMA foreign_keys = OFF;
-                
-                -- Deletar todas as tabelas existentes
-                DROP TABLE IF EXISTS itens_venda;
-                DROP TABLE IF EXISTS vendas;
-                DROP TABLE IF EXISTS produtos;
-                DROP TABLE IF EXISTS usuarios;
-                DROP TABLE IF EXISTS printer_config;
-                DROP TABLE IF EXISTS contas_pagar;
-                DROP TABLE IF EXISTS movimentacao_caixa;
-                DROP TABLE IF EXISTS categorias_despesa;
-                
-                -- Limpar sequências de AUTO_INCREMENT
-                DELETE FROM sqlite_sequence;
-                
-                -- Recriar as tabelas do zero
-                CREATE TABLE usuarios (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nome TEXT NOT NULL,
-                    usuario TEXT NOT NULL UNIQUE,
-                    senha TEXT NOT NULL,
-                    is_admin BOOLEAN NOT NULL DEFAULT 0,
-                    ativo BOOLEAN NOT NULL DEFAULT 1
-                );
+            if hasattr(self, 'conn') and self.conn:
+                self.conn.close()
+                self.conn = None
+            # Força a coleta de lixo para liberar recursos
+            import gc
+            gc.collect()
+            return True
+        except Exception as e:
+            print(f"Erro ao fechar conexões: {e}")
+            return False
 
-                CREATE TABLE produtos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nome TEXT NOT NULL,
-                    descricao TEXT,
-                    preco_custo REAL NOT NULL,
-                    preco_venda REAL NOT NULL,
-                    estoque INTEGER NOT NULL DEFAULT 0,
-                    estoque_minimo INTEGER NOT NULL DEFAULT 1,
-                    ativo BOOLEAN NOT NULL DEFAULT 1
-                );
-
-                CREATE TABLE vendas (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    usuario_id INTEGER NOT NULL,
-                    data_venda TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    total REAL NOT NULL,
-                    forma_pagamento TEXT NOT NULL,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-                );
-
-                CREATE TABLE itens_venda (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    venda_id INTEGER NOT NULL,
-                    produto_id INTEGER NOT NULL,
-                    quantidade INTEGER NOT NULL,
-                    preco_unitario REAL NOT NULL,
-                    preco_custo_unitario REAL NOT NULL,
-                    FOREIGN KEY (venda_id) REFERENCES vendas (id),
-                    FOREIGN KEY (produto_id) REFERENCES produtos (id)
-                );
+    def reset_database(self):
+        """
+        Reseta o banco de dados para o estado inicial.
+        Retorna True se o reset for bem-sucedido, False caso contrário.
+        """
+        import time
+        
+        try:
+            print("Iniciando reset do banco de dados...")
+            
+            # 1. Fechar a conexão atual
+            print("Fechando conexões atuais...")
+            self.close_all_connections()
+            
+            # 2. Remover o arquivo do banco de dados
+            db_path = str(self.db_path.absolute())
+            backup_path = f"{db_path}.backup_{int(time.time())}"
+            print(f"Fazendo backup do banco atual para: {backup_path}")
+            
+            # 3. Fazer backup do banco atual antes de remover
+            if os.path.exists(db_path):
+                try:
+                    shutil.copy2(db_path, backup_path)
+                    print(f"Backup criado com sucesso em: {backup_path}")
+                except Exception as e:
+                    print(f"Aviso: não foi possível criar backup: {e}")
+            
+            # 4. Remover o arquivo do banco de dados
+            print(f"Removendo arquivo do banco: {db_path}")
+            if os.path.exists(db_path):
+                max_attempts = 3
+                for attempt in range(max_attempts):
+                    try:
+                        os.remove(db_path)
+                        print("Arquivo removido com sucesso.")
+                        break
+                    except (PermissionError, OSError) as e:
+                        if attempt == max_attempts - 1:
+                            print(f"Falha ao remover arquivo após {max_attempts} tentativas: {e}")
+                            return False
+                        print(f"Tentativa {attempt + 1}/{max_attempts}: Erro ao remover arquivo. Aguardando...")
+                        time.sleep(1)  # Dá um tempo para o SO liberar o arquivo
+            
+            # 5. Criar uma nova conexão
+            print("Criando nova conexão...")
+            self.conn = sqlite3.connect(db_path, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            cursor = self.conn.cursor()
+            
+            # 6. Criar o esquema do banco de dados
+            print("Criando esquema do banco de dados...")
+            try:
+                # Primeiro, criar as tabelas básicas
+                cursor.executescript("""
+                    PRAGMA foreign_keys = OFF;
+                    PRAGMA journal_mode = WAL;
+                    PRAGMA synchronous = NORMAL;
+                    
+                    -- Criar tabela de usuários primeiro (necessária para chaves estrangeiras)
+                    CREATE TABLE IF NOT EXISTS usuarios (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nome TEXT NOT NULL,
+                        usuario TEXT NOT NULL UNIQUE,
+                        senha TEXT NOT NULL,
+                        is_admin BOOLEAN NOT NULL DEFAULT 0,
+                        ativo BOOLEAN NOT NULL DEFAULT 1,
+                        nivel INTEGER NOT NULL DEFAULT 1,
+                        salario REAL DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    
+                    -- Criar tabela de categorias
+                    CREATE TABLE IF NOT EXISTS categorias (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nome TEXT NOT NULL UNIQUE,
+                        descricao TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    
+                    -- Criar tabela de fornecedores
+                    CREATE TABLE IF NOT EXISTS fornecedores (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nome TEXT NOT NULL,
+                        telefone TEXT,
+                        email TEXT,
+                        endereco TEXT,
+                        cnpj TEXT,
+                        ativo INTEGER NOT NULL DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                    
+                    -- Criar tabela de produtos
+                    CREATE TABLE IF NOT EXISTS produtos (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        codigo TEXT NOT NULL UNIQUE,
+                        nome TEXT NOT NULL,
+                        descricao TEXT,
+                        preco_custo REAL NOT NULL DEFAULT 0,
+                        preco_venda REAL NOT NULL DEFAULT 0,
+                        estoque REAL NOT NULL DEFAULT 0,
+                        estoque_minimo REAL NOT NULL DEFAULT 0,
+                        ativo INTEGER NOT NULL DEFAULT 1,
+                        venda_por_peso INTEGER DEFAULT 0,
+                        unidade_medida TEXT DEFAULT 'un',
+                        categoria_id INTEGER,
+                        fornecedor_id INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (categoria_id) REFERENCES categorias(id),
+                        FOREIGN KEY (fornecedor_id) REFERENCES fornecedores(id)
+                    );
+                    
+                    -- Criar tabela de vendas
+                    CREATE TABLE IF NOT EXISTS vendas (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        data_venda TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        valor_total REAL NOT NULL,
+                        desconto REAL DEFAULT 0,
+                        valor_recebido REAL NOT NULL,
+                        troco REAL DEFAULT 0,
+                        forma_pagamento TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'Finalizada',
+                        usuario_id INTEGER NOT NULL,
+                        cliente_id INTEGER,
+                        observacoes TEXT,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                    );
+                    
+                    -- Criar tabela de itens de venda
+                    CREATE TABLE IF NOT EXISTS itens_venda (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        venda_id INTEGER NOT NULL,
+                        produto_id INTEGER NOT NULL,
+                        quantidade REAL NOT NULL,
+                        preco_unitario REAL NOT NULL,
+                        desconto REAL DEFAULT 0,
+                        subtotal REAL NOT NULL,
+                        preco_custo_unitario REAL NOT NULL DEFAULT 0,
+                        FOREIGN KEY (venda_id) REFERENCES vendas(id) ON DELETE CASCADE,
+                        FOREIGN KEY (produto_id) REFERENCES produtos(id)
+                    );
+                    
+                    -- Tabela de retiradas de caixa
+                    CREATE TABLE IF NOT EXISTS retiradas_caixa (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        data_retirada TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        valor REAL NOT NULL,
+                        motivo TEXT,
+                        usuario_id INTEGER NOT NULL,
+                        observacoes TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                    );
+                    
+                    -- Habilitar chaves estrangeiras
+                    PRAGMA foreign_keys = ON;
+                """)
                 
-                CREATE TABLE contas_pagar (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    descricao TEXT NOT NULL,
-                    valor REAL NOT NULL,
-                    data_vencimento DATE NOT NULL,
-                    data_pagamento DATE,
-                    categoria TEXT NOT NULL,
-                    tipo TEXT NOT NULL,  -- 'Compra' ou 'Despesa'
-                    status TEXT NOT NULL DEFAULT 'Pendente',  -- 'Pendente' ou 'Pago'
-                    observacao TEXT,
-                    usuario_id INTEGER,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-                );
-
-                CREATE TABLE movimentacao_caixa (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data_movimento DATETIME NOT NULL,
-                    tipo TEXT NOT NULL,  -- 'Entrada' ou 'Saída'
-                    valor REAL NOT NULL,
-                    descricao TEXT NOT NULL,
-                    categoria TEXT,
-                    usuario_id INTEGER,
-                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-                );
-
-                CREATE TABLE categorias_despesa (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nome TEXT NOT NULL UNIQUE
-                );
+                # Commit inicial
+                self.conn.commit()
+                print("Esquema do banco de dados criado com sucesso.")
                 
-                PRAGMA foreign_keys = ON;
-            """)
-            
-            # Criar usuário admin com senha criptografada
-            import hashlib
-            senha_admin = "admin123"
-            senha_hash = hashlib.sha256(senha_admin.encode()).hexdigest()
-            
-            cursor.execute("""
-                INSERT INTO usuarios (nome, usuario, senha, is_admin, ativo)
-                VALUES (?, ?, ?, ?, ?)
-            """, ("Administrador", "admin", senha_hash, 1, 1))
-            
-            # Garantir que as alterações sejam salvas
-            conn.commit()
-            
-            # Verificar se o usuário foi criado
-            cursor.execute("SELECT * FROM usuarios WHERE usuario = 'admin'")
-            admin_user = cursor.fetchone()
-            if not admin_user:
-                raise Exception("Falha ao criar usuário admin")
+                # 7. Inserir dados iniciais
+                print("Inserindo dados iniciais...")
                 
-            conn.close()
+                # Inserir fornecedor padrão
+                cursor.execute("""
+                    INSERT OR IGNORE INTO fornecedores (id, nome, telefone, ativo)
+                    VALUES (1, 'Fornecedor Padrão', '', 1)
+                """)
+                
+                # Criar usuário admin
+                senha_hash = generate_password_hash("842384")
+                cursor.execute("""
+                    INSERT OR REPLACE INTO usuarios 
+                    (id, nome, usuario, senha, is_admin, ativo, nivel, salario)
+                    VALUES (1, 'Administrador', 'admin', ?, 1, 1, 2, 0)
+                """, (senha_hash,))
+                
+                # Criar trigger para updated_at
+                cursor.execute('''
+                    CREATE TRIGGER IF NOT EXISTS retiradas_caixa_updated_at 
+                    AFTER UPDATE ON retiradas_caixa
+                    BEGIN
+                        UPDATE retiradas_caixa 
+                        SET updated_at = datetime('now', 'localtime') 
+                        WHERE id = NEW.id;
+                    END
+                ''')
+                
+                # Commit final
+                self.conn.commit()
+                print("Dados iniciais inseridos com sucesso!")
+                
+                # Garantir que todas as tabelas necessárias foram criadas
+                self._init_database()
+                
+                return True
+                
+            except sqlite3.Error as e:
+                print(f"Erro ao criar esquema do banco de dados: {e}")
+                self.conn.rollback()
+                return False
+            except Exception as e:
+                print(f"ERRO inesperado: {e}")
+                self.conn.rollback()
+                return False
+            
+            # 8. Commitar as alterações
+            self.conn.commit()
+            print("Banco de dados resetado com sucesso!")
             return True
             
         except Exception as e:
-            if conn:
-                conn.close()
+            print(f"Erro ao resetar banco de dados: {e}")
+            if hasattr(self, 'conn') and self.conn:
+                try:
+                    self.conn.rollback()
+                except:
+                    pass
             return False
 
     def verificar_login(self, usuario, senha):
         """Verifica as credenciais do usuário"""
         try:
-            # Criptografar a senha fornecida para comparação
-            import hashlib
-            senha_hash = hashlib.sha256(senha.encode()).hexdigest()
+            from werkzeug.security import check_password_hash
             
             # Buscar usuário
             result = self.fetchone("""
-                SELECT id, nome, usuario, is_admin, ativo
+                SELECT id, nome, usuario, senha, is_admin, ativo, nivel, pode_abastecer, pode_gerenciar_despesas
                 FROM usuarios 
-                WHERE usuario = ? AND senha = ? AND ativo = 1
-            """, (usuario, senha_hash))
+                WHERE usuario = ? AND ativo = 1
+            """, (usuario,))
             
-            if result:
+            if result and check_password_hash(result[3], senha):
                 return {
                     'id': result[0],
                     'nome': result[1],
                     'usuario': result[2],
-                    'is_admin': bool(result[3]),
-                    'ativo': bool(result[4])
+                    'is_admin': bool(result[4]),
+                    'ativo': bool(result[5]),
+                    'nivel': result[6] if len(result) > 6 else 1,
+                    'pode_abastecer': bool(result[7]) if len(result) > 7 else False,
+                    'pode_gerenciar_despesas': bool(result[8]) if len(result) > 8 else False
                 }
             return None
             
         except Exception as e:
+            print(f"Erro ao verificar login: {str(e)}")
             return None
         
     def migrar_despesas_existentes(self):
@@ -1081,7 +1730,7 @@ class Database:
         try:
             cursor = self.conn.cursor()
             
-            # Garante que todos os campos necessários existem
+            # Garante que todos os campos necessários existam
             required_fields = ['empresa', 'endereco', 'telefone', 'nuit', 'rodape', 'impressora_padrao', 'imprimir_automatico']
             for field in required_fields:
                 if field not in config_data:
@@ -1406,19 +2055,35 @@ class Database:
     def get_total_vendas_hoje(self):
         """Retorna o total de vendas do dia"""
         try:
-            result = self.fetchone("""
-                SELECT COALESCE(SUM(
-                    CASE 
-                        WHEN status = 'Anulada' THEN 0 
-                        ELSE total 
-                    END
-                ), 0) as total
+            print("\n=== CALCULANDO TOTAL DE VENDAS HOJE ===")
+            query = """
+                SELECT 
+                    COALESCE(SUM(
+                        CASE 
+                            WHEN status = 'Anulada' THEN 0 
+                            ELSE total 
+                        END
+                    ), 0) as total,
+                    COUNT(*) as total_registros,
+                    SUM(CASE WHEN status = 'Anulada' THEN 1 ELSE 0 END) as total_anuladas
                 FROM vendas
                 WHERE DATE(data_venda) = DATE('now')
-            """)
-            return result['total'] if result else 0
+            """
+            print(f"Executando query: {query}")
+            
+            result = self.fetchone(query)
+            
+            if result:
+                print(f"Resultado da query: total={result['total']}, registros={result['total_registros']}, anuladas={result['total_anuladas']}")
+                return result['total']
+            else:
+                print("Nenhum resultado retornado para vendas de hoje")
+                return 0
+                
         except Exception as e:
             print(f"Erro ao buscar total de vendas hoje: {e}")
+            import traceback
+            print(traceback.format_exc())
             return 0
 
     def get_total_vendas_mes(self):
@@ -1439,6 +2104,47 @@ class Database:
             return result['total'] if result['total'] else 0
         except Exception as e:
             print(f"Erro ao buscar total de vendas do mês: {e}")
+            return 0
+
+    def get_vendas_disponiveis_mes(self):
+        """Retorna o total de vendas do mês atual MENOS os saques realizados"""
+        try:
+            # Total de vendas do mês
+            query_vendas = """
+                SELECT COALESCE(SUM(
+                    CASE 
+                        WHEN status = 'Anulada' THEN 0 
+                        ELSE total 
+                    END
+                ), 0) as total
+                FROM vendas
+                WHERE strftime('%Y-%m', data_venda) = strftime('%Y-%m', 'now')
+            """
+            
+            result_vendas = self.fetchone(query_vendas)
+            total_vendas = result_vendas['total'] if result_vendas and result_vendas['total'] else 0
+            
+            # Total de saques de vendas do mês
+            query_saques = """
+                SELECT COALESCE(SUM(valor), 0) as total_saques
+                FROM retiradas_caixa
+                WHERE origem = 'vendas'
+                AND strftime('%Y-%m', data_retirada) = strftime('%Y-%m', 'now')
+                AND status = 'Completo'
+            """
+            
+            result_saques = self.fetchone(query_saques)
+            total_saques = result_saques['total_saques'] if result_saques and result_saques['total_saques'] else 0
+            
+            # Debug: imprimir valores para verificação
+            print(f"[DEBUG] Vendas brutas do mês: MT {total_vendas:.2f}")
+            print(f"[DEBUG] Saques de vendas do mês: MT {total_saques:.2f}")
+            print(f"[DEBUG] Vendas disponíveis: MT {max(0, total_vendas - total_saques):.2f}")
+            
+            # Retorna vendas menos saques
+            return max(0, total_vendas - total_saques)
+        except Exception as e:
+            print(f"Erro ao calcular vendas disponíveis do mês: {e}")
             return 0
 
     def get_lucro_total(self):
@@ -1475,6 +2181,7 @@ class Database:
                 FROM vendas v
                 JOIN itens_venda iv ON v.id = iv.venda_id
                 WHERE strftime('%Y-%m', v.data_venda) = strftime('%Y-%m', 'now')
+                AND (v.origem IS NULL OR v.origem != 'divida_quitada' OR v.origem = 'divida_quitada')
             """
             
             result = self.fetchone(query)
@@ -1483,6 +2190,88 @@ class Database:
             print(f"Erro ao calcular lucro do mês: {e}")
             return 0
 
+    def get_lucro_disponivel_mes(self):
+        """Retorna o lucro do mês atual MENOS os saques de lucro realizados"""
+        try:
+            # Lucro bruto do mês
+            query_lucro = """
+                SELECT COALESCE(SUM(
+                    CASE 
+                        WHEN v.status = 'Anulada' THEN 0 
+                        ELSE (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade))
+                    END
+                ), 0) as lucro
+                FROM vendas v
+                JOIN itens_venda iv ON v.id = iv.venda_id
+                WHERE strftime('%Y-%m', v.data_venda) = strftime('%Y-%m', 'now')
+            """
+            
+            result_lucro = self.fetchone(query_lucro)
+            lucro_bruto = result_lucro['lucro'] if result_lucro and result_lucro['lucro'] else 0
+            
+            # Total de saques de lucro do mês
+            query_saques = """
+                SELECT COALESCE(SUM(valor), 0) as total_saques
+                FROM retiradas_caixa
+                WHERE origem = 'lucro'
+                AND strftime('%Y-%m', data_retirada) = strftime('%Y-%m', 'now')
+                AND status = 'Completo'
+            """
+            
+            result_saques = self.fetchone(query_saques)
+            total_saques = result_saques['total_saques'] if result_saques and result_saques['total_saques'] else 0
+            
+            # Debug: imprimir valores para verificação
+            print(f"[DEBUG] Lucro bruto do mês: MT {lucro_bruto:.2f}")
+            print(f"[DEBUG] Saques de lucro do mês: MT {total_saques:.2f}")
+            print(f"[DEBUG] Lucro disponível: MT {max(0, lucro_bruto - total_saques):.2f}")
+            
+            # Retorna lucro menos saques
+            return max(0, lucro_bruto - total_saques)
+        except Exception as e:
+            print(f"Erro ao calcular lucro disponível do mês: {e}")
+            return 0
+
+    def get_lucro_dia(self):
+        """Retorna o lucro do dia atual"""
+        try:
+            print("\n=== INÍCIO CÁLCULO LUCRO DIA ===")
+            
+            # Primeiro, verificar se existem vendas hoje
+            query_vendas = """
+                SELECT v.id, v.valor_total, v.status, v.data_venda, v.origem,
+                       SUM(iv.subtotal - (iv.preco_custo_unitario * iv.quantidade)) as lucro
+                FROM vendas v
+                JOIN itens_venda iv ON v.id = iv.venda_id
+                WHERE DATE(v.data_venda) = DATE('now')
+                AND (v.status IS NULL OR v.status != 'Anulada')
+                GROUP BY v.id
+                ORDER BY v.data_venda DESC
+            """
+            vendas_hoje = self.fetchall(query_vendas)
+            print(f"[DEBUG] Encontradas {len(vendas_hoje)} vendas hoje")
+            
+            lucro_total = 0.0
+            
+            # Somar o lucro de todas as vendas
+            for venda in vendas_hoje:
+                lucro_venda = venda['lucro'] or 0
+                lucro_total += lucro_venda
+                print(f"[DEBUG] Venda {venda['id']} - Lucro: MT {lucro_venda:.2f}")
+                
+                # Se for uma venda de dívida, adicionar ao lucro total
+                if venda['origem'] == 'divida_quitada' if 'origem' in venda and venda['origem'] is not None else False:
+                    print(f"[DEBUG] Venda {venda['id']} é uma dívida quitada")
+            
+            print(f"[DEBUG] Lucro total do dia: MT {lucro_total:.2f}")
+            return lucro_total
+            
+        except Exception as e:
+            print(f"[ERRO] Erro ao calcular lucro do dia: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return 0.0
+
     def get_vendas_nao_fechadas(self, usuario_id):
         """Retorna vendas não incluídas em nenhum fechamento"""
         try:
@@ -1490,7 +2279,7 @@ class Database:
                 SELECT 
                     forma_pagamento,
                     COUNT(*) as quantidade,
-                    SUM(total) as total
+                    SUM(valor_total) as total
                 FROM vendas 
                 WHERE usuario_id = ?
                 AND DATE(data_venda) = DATE('now')
@@ -1503,66 +2292,6 @@ class Database:
         except Exception as e:
             print(f"Erro ao buscar vendas não fechadas: {e}")
             return []
-
-    def registrar_fechamento(self, dados_fechamento):
-        """Registra um novo fechamento de caixa"""
-        try:
-            cursor = self.conn.cursor()
-            
-            # Inserir fechamento principal
-            cursor.execute("""
-                INSERT INTO fechamentos_caixa (
-                    usuario_id, data_fechamento,
-                    valor_sistema, valor_informado,
-                    diferenca, observacoes, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                dados_fechamento['usuario_id'],
-                dados_fechamento['data_fechamento'],
-                dados_fechamento['valor_sistema'],
-                dados_fechamento['valor_informado'],
-                dados_fechamento['diferenca'],
-                dados_fechamento['observacoes'],
-                'Pendente'
-            ))
-            
-            fechamento_id = cursor.lastrowid
-            
-            # Inserir detalhes por forma de pagamento
-            for forma in dados_fechamento['formas_pagamento']:
-                cursor.execute("""
-                    INSERT INTO fechamentos_formas_pagamento (
-                        fechamento_id, forma_pagamento,
-                        valor_sistema, valor_informado, diferenca
-                    ) VALUES (?, ?, ?, ?, ?)
-                """, (
-                    fechamento_id,
-                    forma['forma'],
-                    forma['valor_sistema'],
-                    forma['valor_informado'],
-                    forma['diferenca']
-                ))
-            
-            # Vincular vendas ao fechamento
-            cursor.execute("""
-                INSERT INTO vendas_fechamentos (venda_id, fechamento_id)
-                SELECT id, ?
-                FROM vendas
-                WHERE usuario_id = ?
-                AND DATE(data_venda) = DATE('now')
-                AND id NOT IN (
-                    SELECT venda_id FROM vendas_fechamentos
-                    WHERE venda_id IS NOT NULL
-                )
-            """, (fechamento_id, dados_fechamento['usuario_id']))
-            
-            self.conn.commit()
-            return fechamento_id
-            
-        except Exception as e:
-            self.conn.rollback()
-            print(f"Erro ao registrar fechamento: {e}")
-            raise
 
     def get_fechamentos_usuario(self, usuario_id):
         """Retorna os fechamentos de caixa do usuário"""
@@ -1627,7 +2356,7 @@ class Database:
         """Retorna o total de vendas do congelador para hoje"""
         try:
             result = self.fetchone("""
-                SELECT COALESCE(SUM(v.total), 0) as total
+                SELECT COALESCE(SUM(v.valor_total), 0) as total
                 FROM vendas v
                 JOIN itens_venda iv ON v.id = iv.venda_id
                 JOIN produtos p ON iv.produto_id = p.id
@@ -1706,8 +2435,8 @@ class Database:
             
             # Remover arquivo do banco
             import os
-            if os.path.exists('database.db'):
-                os.remove('database.db')
+            if os.path.exists(str(self.db_path)):
+                os.remove(str(self.db_path))
                 print("Arquivo do banco removido")
             
             # Recriar conexão e inicializar banco
@@ -1719,3 +2448,806 @@ class Database:
         except Exception as error:
             print(f"Erro ao recriar banco: {error}")
             raise error
+
+    def run_schema_migrations(self):
+        """Executa novamente as migrações/garante o esquema completo.
+
+        Use após restaurar um backup antigo para garantir que todas as
+        tabelas, colunas e triggers estejam presentes.
+        """
+        try:
+            self._init_database()
+            return True
+        except Exception:
+            return False
+
+    def ensure_abastecimento_schema(self):
+        """Garante as estruturas mínimas usadas pelo Abastecimento.
+
+        - Tabela fornecedores (com registro padrão)
+        - Coluna produtos.fornecedor_id
+        - Tabelas compras e compra_itens
+        """
+        try:
+            cursor = self.conn.cursor()
+
+            # Fornecedores
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS fornecedores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL,
+                    telefone TEXT,
+                    email TEXT,
+                    endereco TEXT,
+                    cnpj TEXT,
+                    ativo INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                INSERT OR IGNORE INTO fornecedores (id, nome, ativo)
+                VALUES (1, 'Fornecedor Padrão', 1)
+            ''')
+
+            # Coluna fornecedor_id em produtos
+            cursor.execute("PRAGMA table_info(produtos)")
+            cols = [c[1] for c in cursor.fetchall()]
+            if 'fornecedor_id' not in cols:
+                try:
+                    cursor.execute('''
+                        ALTER TABLE produtos
+                        ADD COLUMN fornecedor_id INTEGER DEFAULT 1 REFERENCES fornecedores(id)
+                    ''')
+                except Exception:
+                    pass
+
+            # Tabela compras
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS compras (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fornecedor TEXT NOT NULL,
+                    valor_total REAL NOT NULL,
+                    usuario_id INTEGER NOT NULL,
+                    observacoes TEXT,
+                    data_compra TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+                )
+            ''')
+
+            # Tabela compra_itens
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS compra_itens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    compra_id INTEGER NOT NULL,
+                    produto_id INTEGER,
+                    produto_nome TEXT NOT NULL,
+                    quantidade REAL NOT NULL,
+                    preco_unitario REAL NOT NULL,
+                    preco_venda REAL NOT NULL,
+                    lucro_unitario REAL NOT NULL,
+                    lucro_total REAL NOT NULL,
+                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (compra_id) REFERENCES compras(id) ON DELETE CASCADE,
+                    FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE SET NULL
+                )
+            ''')
+
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Erro ao garantir schema de abastecimento: {e}")
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            return False
+
+    def get_vendas_hoje(self):
+        """Retorna todas as vendas do dia atual para depuração"""
+        try:
+            query = """
+                SELECT 
+                    v.id as venda_id,
+                    v.data_venda,
+                    v.status,
+                    v.total,
+                    v.forma_pagamento,
+                    iv.id as item_id,
+                    iv.produto_id,
+                    iv.quantidade,
+                    iv.preco_unitario,
+                    iv.subtotal,
+                    iv.preco_custo_unitario,
+                    (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade)) as lucro_item
+                FROM vendas v
+                LEFT JOIN itens_venda iv ON v.id = iv.venda_id
+                WHERE DATE(v.data_venda) = DATE('now')
+                ORDER BY v.data_venda DESC
+            """
+            
+            vendas = self.fetchall(query, dictionary=True)
+            print("\n=== VENDAS DE HOJE ===")
+            print(f"Total de registros: {len(vendas)}")
+            
+            for venda in vendas[:5]:  # Mostra apenas as 5 primeiras para não poluir o log
+                print(f"\nVenda ID: {venda['venda_id']}")
+                print(f"Data: {venda['data_venda']}")
+                print(f"Status: {venda['status']}")
+                print(f"Total: {venda['total']}")
+                print(f"Forma de Pagamento: {venda['forma_pagamento']}")
+                print(f"Item ID: {venda['item_id']}")
+                print(f"Produto ID: {venda['produto_id']}")
+                print(f"Quantidade: {venda['quantidade']}")
+                print(f"Preço Unitário: {venda['preco_unitario']}")
+                print(f"Subtotal: {venda['subtotal']}")
+                print(f"Custo Unitário: {venda['preco_custo_unitario']}")
+                print(f"Lucro do Item: {venda['lucro_item']}")
+            
+            if len(vendas) > 5:
+                print(f"\n... e mais {len(vendas) - 5} registros")
+            
+            return vendas
+            
+        except Exception as e:
+            print(f"Erro ao buscar vendas de hoje: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    def verificar_estrutura_tabelas(self):
+        """Verifica a estrutura das tabelas para depuração"""
+        try:
+            print("\n=== Verificando estrutura das tabelas ===")
+            
+            # Verificar estrutura da tabela vendas
+            print("Estrutura da tabela vendas:")
+            result = self.fetchall("PRAGMA table_info(vendas)")
+            for col in result:
+                print(f"  - {col['name']}: {col['type']}")
+            
+            # Verificar estrutura da tabela itens_venda
+            print("\nEstrutura da tabela itens_venda:")
+            result = self.fetchall("PRAGMA table_info(itens_venda)")
+            for col in result:
+                print(f"  - {col['name']}: {col['type']}")
+            
+            # Verificar estrutura da tabela produtos
+            print("\nEstrutura da tabela produtos:")
+            result = self.fetchall("PRAGMA table_info(produtos)")
+            for col in result:
+                print(f"  - {col['name']}: {col['type']}")
+            
+            print("\n=== Fim da verificação de estrutura ===")
+            
+        except Exception as e:
+            print(f"Erro ao verificar estrutura das tabelas: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def verificar_estrutura_retiradas_caixa(self):
+        """Verifica a estrutura da tabela retiradas_caixa"""
+        try:
+            print("\n=== Estrutura da tabela retiradas_caixa ===")
+            result = self.fetchall("PRAGMA table_info(retiradas_caixa)")
+            
+            if not result:
+                print("A tabela retiradas_caixa não existe.")
+                return False
+                
+            print("\nColunas da tabela retiradas_caixa:")
+            for col in result:
+                print(f"  - {col['name']}: {col['type']} {'PRIMARY KEY' if col['pk'] > 0 else ''}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"Erro ao verificar estrutura da tabela retiradas_caixa: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def adicionar_compra(self, fornecedor, itens, usuario_id, observacoes=None):
+        """
+        Adiciona uma nova compra ao banco de dados
+        
+        Args:
+            fornecedor (str): Nome do fornecedor
+            itens (list): Lista de dicionários contendo 'produto_id', 'produto_nome', 'quantidade', 
+                         'preco_unitario', 'preco_venda', 'lucro_unitario', 'lucro_total'
+            usuario_id (int): ID do usuário que está registrando a compra
+            observacoes (str, optional): Observações sobre a compra
+            
+        Returns:
+            int: ID da compra criada ou None em caso de erro
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Calcular valor total da compra
+            valor_total = sum(item['preco_unitario'] * item['quantidade'] for item in itens)
+            
+            # Inserir a compra
+            cursor.execute('''
+                INSERT INTO compras (fornecedor, valor_total, usuario_id, observacoes)
+                VALUES (?, ?, ?, ?)
+            ''', (fornecedor, valor_total, usuario_id, observacoes))
+            
+            compra_id = cursor.lastrowid
+            
+            # Inserir os itens da compra
+            for item in itens:
+                cursor.execute('''
+                    INSERT INTO compra_itens 
+                    (compra_id, produto_id, produto_nome, quantidade, preco_unitario, preco_venda, lucro_unitario, lucro_total)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    compra_id,
+                    item.get('produto_id'),
+                    item['produto_nome'],
+                    item['quantidade'],
+                    item['preco_unitario'],
+                    item['preco_venda'],
+                    item['lucro_unitario'],
+                    item['lucro_total']
+                ))
+            
+            self.conn.commit()
+            return compra_id
+            
+        except Exception as e:
+            print(f"Erro ao adicionar compra: {e}")
+            self.conn.rollback()
+            return None
+    
+    def obter_compras_por_data(self, data_inicio, data_fim=None):
+        """
+        Obtém as compras dentro de um período
+        
+        Args:
+            data_inicio (str): Data de início no formato 'YYYY-MM-DD'
+            data_fim (str, optional): Data de fim no formato 'YYYY-MM-DD'. Se não informado, usa a data atual
+            
+        Returns:
+            list: Lista de dicionários com as compras encontradas
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            if data_fim is None:
+                data_fim = datetime.now().strftime('%Y-%m-%d')
+            
+            cursor.execute('''
+                SELECT c.*, u.nome as responsavel 
+                FROM compras c
+                JOIN usuarios u ON c.usuario_id = u.id
+                WHERE date(c.data_compra) BETWEEN date(?) AND date(?)
+                ORDER BY c.data_compra DESC
+            ''', (data_inicio, data_fim))
+            
+            return [dict(row) for row in cursor.fetchall()]
+            
+        except Exception as e:
+            print(f"Erro ao obter compras: {e}")
+            return []
+    
+    def obter_itens_compra(self, compra_id):
+        """
+        Obtém os itens de uma compra específica
+        
+        Args:
+            compra_id (int): ID da compra
+            
+        Returns:
+            list: Lista de dicionários com os itens da compra
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            cursor.execute('''
+                SELECT * FROM compra_itens 
+                WHERE compra_id = ?
+                ORDER BY id
+            ''', (compra_id,))
+            
+            return [dict(row) for row in cursor.fetchall()]
+            
+        except Exception as e:
+            print(f"Erro ao obter itens da compra: {e}")
+            return []
+
+    def criar_tabela_compra_itens(self):
+        """Cria a tabela de itens da compra"""
+        try:
+            cursor = self.conn.cursor()
+            
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS compra_itens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                compra_id INTEGER NOT NULL,
+                produto_id INTEGER,
+                produto_nome TEXT NOT NULL,
+                quantidade REAL NOT NULL,
+                preco_unitario REAL NOT NULL,
+                preco_venda REAL NOT NULL,
+                lucro_unitario REAL NOT NULL,
+                lucro_total REAL NOT NULL,
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (compra_id) REFERENCES compras(id) ON DELETE CASCADE,
+                FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE SET NULL
+            )
+            ''')
+            
+            self.conn.commit()
+            print("Tabela compra_itens criada com sucesso!")
+            return True
+            
+        except Exception as e:
+            print(f"Erro ao criar tabela compra_itens: {e}")
+            return False
+
+    def obter_categorias(self):
+        """
+        Retorna todas as categorias cadastradas no sistema
+        
+        Returns:
+            list: Lista de dicionários com as categorias
+        """
+        return self.fetchall("""
+            SELECT id, nome, descricao 
+            FROM categorias 
+            ORDER BY nome
+        """, dictionary=True)
+
+    def buscar_produto_por_codigo_ou_nome(self, termo):
+        """
+        Busca um produto por código ou nome
+        
+        Args:
+            termo (str): Código ou nome do produto a ser buscado
+            
+        Returns:
+            dict or None: Dicionário com os dados do produto ou None se não encontrado
+        """
+        if not termo:
+            return None
+            
+        # Remove espaços extras e converte para minúsculas para busca case-insensitive
+        termo = f"%{termo.strip().lower()}%"
+        
+        return self.fetchone("""
+            SELECT p.*, c.nome as categoria_nome
+            FROM produtos p
+            LEFT JOIN categorias c ON p.categoria_id = c.id
+            WHERE (LOWER(p.codigo) LIKE ? OR LOWER(p.nome) LIKE ?) 
+            AND p.ativo = 1
+            LIMIT 1
+        """, (termo, termo), dictionary=True)
+
+    def verificar_consistencia_saques(self):
+        """
+        Verifica a consistência entre os totais de vendas/lucro e os saques registrados.
+        Retorna um dicionário com os resultados da verificação.
+        """
+        try:
+            # Iniciar transação
+            self.conn.execute("BEGIN TRANSACTION")
+            
+            # 1. Verificar consistência de vendas
+            vendas_saques = self.fetchone("""
+                SELECT 
+                    (SELECT COALESCE(SUM(valor_total), 0) 
+                     FROM vendas 
+                     WHERE status = 'Concluída' 
+                     AND DATE(data_venda) = DATE('now')) as total_vendas,
+                    
+                    (SELECT COALESCE(SUM(valor), 0) 
+                     FROM retiradas_caixa 
+                     WHERE origem = 'vendas' 
+                     AND DATE(data_retirada) = DATE('now')) as total_saques_vendas
+            """)
+            
+            # 2. Verificar consistência de lucro
+            lucro_saques = self.fetchone("""
+                SELECT 
+                    (SELECT COALESCE(SUM(
+                        CASE
+                            WHEN v.status = 'Anulada' THEN 0
+                            ELSE (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade))
+                        END
+                    ), 0)
+                    FROM vendas v
+                    JOIN itens_venda iv ON v.id = iv.venda_id
+                    WHERE DATE(v.data_venda) = DATE('now')) as total_lucro,
+                    
+                    (SELECT COALESCE(SUM(valor), 0) 
+                     FROM retiradas_caixa 
+                     WHERE origem = 'lucro' 
+                     AND DATE(data_retirada) = DATE('now')) as total_saques_lucro
+            """)
+            
+            # 3. Verificar saques pendentes
+            saques_pendentes = self.fetchone("""
+                SELECT COUNT(*) as total, 
+                       COALESCE(SUM(valor), 0) as valor_total
+                FROM retiradas_caixa
+                WHERE status = 'pendente'
+                AND DATE(data_retirada) = DATE('now')
+            """)
+            
+            # 4. Calcular saldos disponíveis
+            saldo_vendas = vendas_saques['total_vendas'] - vendas_saques['total_saques_vendas']
+            saldo_lucro = lucro_saques['total_lucro'] - lucro_saques['total_saques_lucro']
+            
+            # 5. Verificar se há valores negativos (inconsistência)
+            consistente = True
+            problemas = []
+            
+            if saldo_vendas < 0:
+                consistente = False
+                problemas.append(f"Saldo de vendas negativo: MT {saldo_vendas:,.2f}")
+                
+            if saldo_lucro < 0:
+                consistente = False
+                problemas.append(f"Saldo de lucro negativo: MT {saldo_lucro:,.2f}")
+            
+            # Commit da transação
+            self.conn.commit()
+            
+            return {
+                'consistente': consistente,
+                'problemas': problemas,
+                'vendas': {
+                    'total': vendas_saques['total_vendas'],
+                    'saques': vendas_saques['total_saques_vendas'],
+                    'saldo_disponivel': max(0, saldo_vendas)
+                },
+                'lucro': {
+                    'total': lucro_saques['total_lucro'],
+                    'saques': lucro_saques['total_saques_lucro'],
+                    'saldo_disponivel': max(0, saldo_lucro)
+                },
+                'saques_pendentes': {
+                    'quantidade': saques_pendentes['total'],
+                    'valor_total': saques_pendentes['valor_total']
+                },
+                'data_verificacao': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+        except Exception as e:
+            self.conn.rollback()
+            raise Exception(f"Erro ao verificar consistência: {str(e)}")
+
+    def get_lucro_potencial_estoque(self):
+        """
+        Calcula o lucro potencial total do estoque atual.
+        Retorna a diferença entre o valor de venda e o custo, multiplicado pela quantidade em estoque
+        para todos os produtos ativos.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT COALESCE(SUM((preco_venda - preco_custo) * estoque), 0) as lucro_potencial
+                FROM produtos
+                WHERE ativo = 1 AND estoque > 0
+            """)
+            result = cursor.fetchone()
+            return float(result[0]) if result and result[0] is not None else 0.0
+        except sqlite3.Error as e:
+            print(f"Erro ao calcular lucro potencial do estoque: {e}")
+            return 0.0
+            
+    def inserir_saque(self, valor: float, origem: str, motivo: str, descricao: str, usuario_id: int):
+        """Insere um registro de saque em retiradas_caixa e retorna o ID."""
+        try:
+            # Garante que a tabela exista
+            self.garantir_tabela_retiradas_caixa()
+
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO retiradas_caixa (
+                    usuario_id,
+                    valor,
+                    motivo,
+                    observacao,
+                    origem,
+                    status,
+                    data_retirada,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'Completo', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (usuario_id, float(valor), motivo, descricao, origem)
+            )
+            # Registrar saída na movimentacao_caixa (impacta saldo imediatamente)
+            try:
+                descricao_mc = f"Saque - {origem}"
+                cursor.execute(
+                    """
+                    INSERT INTO movimentacao_caixa (
+                        data_movimento, tipo, valor, descricao, categoria, usuario_id
+                    ) VALUES (CURRENT_TIMESTAMP, 'Saída', ?, ?, ?, ?)
+                    """,
+                    (float(valor), descricao_mc, origem, usuario_id)
+                )
+            except Exception as mc_err:
+                print(f"Aviso: falha ao registrar movimentacao_caixa: {mc_err}")
+            self.conn.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            print(f"Erro ao inserir saque: {e}")
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            return None
+
+    def verificar_e_corrigir_esquema_pos_restauracao(self):
+        """
+        Verifica e corrige o esquema do banco após restauração de backup.
+        Garante que todas as colunas necessárias existam e corrige triggers problemáticos.
+        """
+        try:
+            print("Verificando esquema após restauração...")
+            cursor = self.conn.cursor()
+            
+            # 1. Verificar e corrigir colunas da tabela vendas
+            colunas_vendas = cursor.execute("PRAGMA table_info(vendas)").fetchall()
+            colunas_vendas = [col[1].lower() for col in colunas_vendas]
+            
+            # Adicionar colunas ausentes
+            colunas_necessarias = {
+                'total': 'REAL DEFAULT 0',
+                'status': 'TEXT DEFAULT "Ativa"',
+                'forma_pagamento': 'TEXT DEFAULT "Dinheiro"',
+                'valor_recebido': 'REAL DEFAULT 0',
+                'troco': 'REAL DEFAULT 0',
+                'data_venda': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
+            }
+            
+            for coluna, tipo in colunas_necessarias.items():
+                if coluna.lower() not in colunas_vendas:
+                    print(f"Coluna '{coluna}' não encontrada. Adicionando...")
+                    cursor.execute(f"ALTER TABLE vendas ADD COLUMN {coluna} {tipo}")
+            
+            # 2. Corrigir trigger problemático
+            print("Verificando triggers...")
+            cursor.execute("DROP TRIGGER IF EXISTS after_divida_quitada")
+            
+            # Recriar o trigger corretamente
+            cursor.execute("""
+                CREATE TRIGGER IF NOT EXISTS after_divida_quitada
+                AFTER UPDATE ON dividas
+                WHEN NEW.status = 'Quitado' AND OLD.status = 'Pendente'
+                BEGIN
+                    -- Inserir na tabela de vendas (sem afetar estoque)
+                    INSERT INTO vendas ( 
+                        usuario_id,
+                        valor_total,
+                        forma_pagamento,
+                        valor_recebido,
+                        troco,
+                        data_venda,
+                        origem,
+                        valor_original_divida,
+                        desconto_aplicado_divida
+                    )
+                    SELECT 
+                        d.usuario_id,
+                        d.valor_total,
+                        (SELECT forma_pagamento FROM pagamentos_divida 
+                         WHERE divida_id = d.id 
+                         ORDER BY data_pagamento DESC LIMIT 1),
+                        d.valor_total,
+                        0,
+                        datetime('now', 'localtime'),
+                        'divida_quitada',
+                        d.valor_original,
+                        d.desconto_aplicado
+                    FROM dividas d
+                    WHERE d.id = NEW.id;
+
+                    -- Inserir itens da venda (sem afetar estoque)
+                    INSERT INTO itens_venda (
+                        venda_id,
+                        produto_id,
+                        quantidade,
+                        preco_unitario,
+                        preco_custo_unitario,
+                        subtotal,
+                        peso_kg
+                    )
+                    SELECT 
+                        last_insert_rowid(),
+                        id.produto_id,
+                        id.quantidade,
+                        id.preco_unitario,
+                        (SELECT preco_custo FROM produtos WHERE id = id.produto_id),
+                        id.subtotal,
+                        COALESCE(id.peso_kg, 0)
+                    FROM itens_divida id
+                    WHERE id.divida_id = NEW.id;
+                END
+            """)
+            
+            # Verificar colunas em itens_venda
+            cursor.execute("PRAGMA table_info(itens_venda)")
+            colunas_itens = {col[1].lower() for col in cursor.fetchall()}
+            
+            # Adicionar colunas ausentes em itens_venda, se necessário
+            colunas_necessarias = {
+                'venda_id': 'INTEGER',
+                'produto_id': 'INTEGER',
+                'quantidade': 'REAL',
+                'preco_unitario': 'REAL',
+                'preco_custo_unitario': 'REAL',
+                'subtotal': 'REAL',
+                'peso_kg': 'REAL',
+                'desconto': 'REAL',
+                'porcentagem_desconto': 'REAL'
+            }
+            
+            for coluna, tipo in colunas_necessarias.items():
+                if coluna not in colunas_itens:
+                    print(f"Coluna '{coluna}' não encontrada em itens_venda. Adicionando...")
+                    cursor.execute(f"ALTER TABLE itens_venda ADD COLUMN {coluna} {tipo}")
+            
+            # Garantir que a tabela retiradas_caixa exista
+            self.garantir_tabela_retiradas_caixa()
+            
+            self.conn.commit()
+            return True
+            
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Erro ao verificar/corrigir esquema: {e}")
+            return False
+            
+            # Verificar e criar tabelas de dívidas se não existirem
+            try:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS dividas ( 
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        cliente_id INTEGER NOT NULL,
+                        data_divida TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        valor_total REAL NOT NULL,
+                        valor_original REAL DEFAULT 0,
+                        desconto_aplicado REAL DEFAULT 0,
+                        percentual_desconto REAL DEFAULT 0,
+                        valor_pago REAL DEFAULT 0,
+                        status TEXT DEFAULT 'Pendente',
+                        observacao TEXT,
+                        usuario_id INTEGER NOT NULL,
+                        FOREIGN KEY (cliente_id) REFERENCES clientes(id),
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS itens_divida (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        divida_id INTEGER NOT NULL,
+                        produto_id INTEGER NOT NULL,
+                        quantidade REAL NOT NULL,
+                        preco_unitario REAL NOT NULL,
+                        subtotal REAL NOT NULL,
+                        peso_kg REAL DEFAULT 0,
+                        FOREIGN KEY (divida_id) REFERENCES dividas(id),
+                        FOREIGN KEY (produto_id) REFERENCES produtos(id)
+                    )
+                """)
+                
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS pagamentos_divida (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        divida_id INTEGER NOT NULL,
+                        data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        valor REAL NOT NULL,
+                        forma_pagamento TEXT NOT NULL,
+                        usuario_id INTEGER NOT NULL,
+                        FOREIGN KEY (divida_id) REFERENCES dividas(id),
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                    )
+                """)
+                print("Tabelas de dívidas verificadas/criadas com sucesso")
+            except Exception as e:
+                print(f"Erro ao verificar/criar tabelas de dívidas: {e}")
+                
+            # Verificar e criar tabela de categorias de despesa se não existir
+            try:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS categorias_despesa (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nome TEXT NOT NULL UNIQUE,
+                        descricao TEXT,
+                        data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                print("Tabela categorias_despesa verificada/criada com sucesso")
+                
+                # Inserir categorias padrão se a tabela estiver vazia
+                cursor.execute("SELECT COUNT(*) as total FROM categorias_despesa")
+                if cursor.fetchone()['total'] == 0:
+                    categorias_padrao = [
+                        ("Aluguel", "Pagamento de aluguel do imóvel"),
+                        ("Água", "Conta de água"),
+                        ("Luz", "Conta de energia elétrica"),
+                        ("Internet", "Serviço de internet"),
+                        ("Salários", "Pagamento de funcionários"),
+                        ("Manutenção", "Manutenção de equipamentos"),
+                        ("Outros", "Outras despesas diversas")
+                    ]
+                    cursor.executemany(
+                        "INSERT INTO categorias_despesa (nome, descricao) VALUES (?, ?)",
+                        categorias_padrao
+                    )
+                    print(f"Inseridas {len(categorias_padrao)} categorias padrão")
+            except Exception as e:
+                print(f"Erro ao verificar/criar tabela categorias_despesa: {e}")
+            
+            # Verificar e criar tabela de despesas recorrentes se não existir
+            try:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS despesas_recorrentes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        tipo TEXT NOT NULL,
+                        categoria TEXT NOT NULL,
+                        descricao TEXT,
+                        valor REAL NOT NULL,
+                        data_vencimento DATE NOT NULL,
+                        data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        usuario_id INTEGER NOT NULL,
+                        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                    )
+                """)
+                print("Tabela despesas_recorrentes verificada/criada com sucesso")
+                
+                # Verificar se a coluna 'status' existe e removê-la se necessário
+                cursor.execute("PRAGMA table_info(despesas_recorrentes)")
+                colunas = cursor.fetchall()
+                tem_status = any(col[1] == 'status' for col in colunas)
+                
+                if tem_status:
+                    print("Removendo coluna 'status' da tabela despesas_recorrentes...")
+                    # SQLite não suporta DROP COLUMN diretamente, então criamos uma nova tabela sem a coluna
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS despesas_recorrentes_nova (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            tipo TEXT NOT NULL,
+                            categoria TEXT NOT NULL,
+                            descricao TEXT,
+                            valor REAL NOT NULL,
+                            data_vencimento DATE NOT NULL,
+                            data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            usuario_id INTEGER NOT NULL,
+                            FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+                        )
+                    """)
+                    
+                    # Copiar dados para a nova tabela (exceto a coluna status)
+                    cursor.execute("""
+                        INSERT INTO despesas_recorrentes_nova 
+                        (id, tipo, categoria, descricao, valor, data_vencimento, data_cadastro, usuario_id)
+                        SELECT id, tipo, categoria, descricao, valor, data_vencimento, data_cadastro, usuario_id
+                        FROM despesas_recorrentes
+                    """)
+                    
+                    # Remover a tabela antiga e renomear a nova
+                    cursor.execute("DROP TABLE despesas_recorrentes")
+                    cursor.execute("ALTER TABLE despesas_recorrentes_nova RENAME TO despesas_recorrentes")
+                    
+                    print("Coluna 'status' removida com sucesso da tabela despesas_recorrentes")
+                
+            except Exception as e:
+                print(f"Erro ao verificar/criar tabela despesas_recorrentes: {e}")
+            
+            # Commit das alterações
+            self.conn.commit()
+            
+            print("Verificação e correção de esquema concluída")
+            return True
+            
+        except Exception as e:
+            print(f"Erro ao verificar/corrigir esquema: {e}")
+            return False

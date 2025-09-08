@@ -1,4 +1,11 @@
 {
-    "nome_empresa": "vuchada",
-    "idioma": "pt"
+    "nome_empresa": "Neotrix",
+    "idioma": "pt",
+    "endereco": "Endereço da Empresa",
+    "telefone": "(00) 0000-0000",
+    "email": "contato@empresa.com",
+    "logo": "",
+    "server_url": "https://prototipo-production-c729.up.railway.app/api",
+    "sync_enabled": true,
+    "sync_interval_seconds": 30
 }

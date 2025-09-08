@@ -85,9 +85,14 @@ class CongeladorVendasView(ft.UserControl, TranslationMixin):
         self.forma_pagamento = ft.Dropdown(
             label="Forma de Pagamento",
             width=200,
-            options=self.carregar_formas_pagamento(),
+            height=50,  
+            content_padding=ft.padding.only(left=10, right=30),  
+            text_size=14,
+            border_color=ft.colors.GREY_400,
+            focused_border_color=ft.colors.BLUE,
             label_style=ft.TextStyle(color=ft.colors.BLACK),
-            color=ft.colors.BLACK
+            color=ft.colors.BLACK,
+            options=self.carregar_formas_pagamento()
         )
         
         self.btn_finalizar = ft.ElevatedButton(

@@ -7,7 +7,6 @@ from views.relatorios_view import RelatoriosView
 from views.usuarios_view import UsuariosView
 from views.minhas_vendas_view import MinhasVendasView
 from views.todas_vendas_view import TodasVendasView
-from database.database import Database
 from views.configuracoes_view import ConfiguracoesView
 from views.printer_config_view import PrinterConfigView
 from views.relatorio_financeiro_view import RelatorioFinanceiroView
@@ -19,31 +18,41 @@ from views.gerenciar_vendas_view import GerenciarVendasView
 from views.congelador_view import CongeladorView
 from views.congelador_vendas_view import CongeladorVendasView
 from views.graficos_view import GraficosView
+from views.abastecimento_view import AbastecimentoView
+from views.sobre_view import SobreView
+from database.database import Database
 import os
 import json
 import platform
+import traceback
+import sys
 
 def main(page: ft.Page):
     # Configurações globais
     page.bgcolor = ft.colors.WHITE
     
-    # Detectar sistema operacional
-    sistema = platform.system().lower()
+    # Detectar se está rodando no navegador
+    is_web = page.platform == "ios" or page.platform == "android" or page.platform == "web"
     
-    # Configurações específicas por sistema operacional
-    if sistema == "windows":
-        page.window_maximized = True
-        page.window_width = 1920
-        page.window_height = 1080
-        page.window_resizable = True
-        page.window_maximizable = True
-        app_data = os.path.join(os.environ['APPDATA'], 'SistemaGestao')
+    # Configurações de janela (apenas para desktop)
+    if not is_web:
+        page.window_full_screen = True  # Força tela cheia
+        page.window_resizable = False   # Desabilita redimensionamento
+        page.window_maximizable = False # Desabilita o botão de maximizar
+    
+    # Configurações de dados do aplicativo
+    if is_web:
+        # No navegador, usamos storage local
+        app_data = "app_data"
+        if not os.path.exists(app_data):
+            os.makedirs(app_data, exist_ok=True)
     else:
-        page.window_width = 1366
-        page.window_height = 768
-        page.window_maximized = True
-        page.window_resizable = True
-        app_data = os.path.join(os.path.expanduser('~'), '.sistemagestao')
+        # No desktop, usamos diretórios do sistema
+        sistema = platform.system().lower()
+        if sistema == "windows":
+            app_data = os.path.join(os.environ['APPDATA'], 'SistemaGestao')
+        else:
+            app_data = os.path.join(os.path.expanduser('~'), '.sistemagestao')
     
     # Configurações comuns
     page.title = "Sistema de Gestão"
@@ -82,31 +91,128 @@ def main(page: ft.Page):
         page.session.set("usuario", usuario)
         page.go("/dashboard")
     
+    def on_login_success(user):
+        # Armazenar dados do usuário na sessão
+        page.data = user
+        # Redirecionar para o dashboard
+        page.go("/dashboard")
+    
     def route_change(route):
         page.views.clear()
         
-        if page.route == "/":
-            page.views.append(
-                ft.View(
-                    route="/",
-                    controls=[LoginView(page)],
-                    padding=0,
-                    bgcolor=ft.colors.WHITE
+        if page.route in ["/", "/login"]:
+            # Para rota de login, limpar estado da página
+            if page.route == "/login":
+                page.data = {}
+            
+            # Limpar todas as views existentes
+            page.views.clear()
+            
+            # Forçar atualização da página antes de adicionar nova view
+            page.update()
+            
+            # Criar nova view de login
+            try:
+                login_view = LoginView(page, on_login_success)
+                page.views.append(
+                    ft.View(
+                        route=page.route,
+                        controls=[login_view],
+                        padding=0,
+                        bgcolor=ft.colors.WHITE
+                    )
                 )
-            )
+                # Forçar atualização após adicionar a view
+                page.update()
+            except Exception as e:
+                print(f"Erro ao criar view de login: {e}")
+                # Fallback: tentar novamente após um pequeno delay
+                import time
+                time.sleep(0.1)
+                try:
+                    login_view = LoginView(page, on_login_success)
+                    page.views.append(
+                        ft.View(
+                            route=page.route,
+                            controls=[login_view],
+                            padding=0,
+                            bgcolor=ft.colors.WHITE
+                        )
+                    )
+                    page.update()
+                except Exception as e2:
+                    print(f"Erro crítico ao criar view de login: {e2}")
         elif page.route == "/dashboard":
             if not page.data:
                 page.go("/")
                 return
                 
-            page.views.append(
-                ft.View(
-                    route="/dashboard",
-                    controls=[DashboardView(page, page.data)],
-                    padding=0,
-                    bgcolor=ft.colors.WHITE
+            print("Acessando rota /dashboard")  # Log de depuração
+            
+            # Verificar se já existe uma view de dashboard
+            existing_view = next((v for v in page.views if v.route == "/dashboard"), None)
+            
+            if existing_view:
+                page.views.remove(existing_view)
+            
+            try:
+                print("Criando nova view de dashboard...")  # Log de depuração
+                dashboard_view = DashboardView(page, page.data) 
+                print("View de dashboard criada com sucesso")  # Log de depuração
+                
+                # Armazenar referência ao dashboard_view na página
+                page.dashboard_view = dashboard_view
+                print("Referência ao dashboard_view armazenada na página")
+                
+                # Verificar se a view tem o método build
+                if not hasattr(dashboard_view, 'build') or not callable(dashboard_view.build):
+                    raise Exception("A view de dashboard não possui um método build válido")
+                
+                page.views.append(
+                    ft.View(
+                        route="/dashboard",
+                        controls=[dashboard_view],
+                        padding=0,
+                        spacing=0,
+                    )
                 )
-            )
+                page.update()
+                
+            except Exception as e:
+                error_msg = f"Erro ao carregar o dashboard: {str(e)}\n\n{traceback.format_exc()}"
+                print(error_msg)  # Log detalhado no console
+                
+                # Exibir mensagem de erro na interface
+                page.views.append(
+                    ft.View(
+                        route="/dashboard",
+                        controls=[
+                            ft.AppBar(title=ft.Text("Erro"), bgcolor=ft.colors.RED_700),
+                            ft.Container(
+                                content=ft.Column(
+                                    [
+                                        ft.Text("Erro ao carregar o dashboard", size=20, color=ft.colors.RED),
+                                        ft.Text(str(e), selectable=True),
+                                        ft.ElevatedButton(
+                                            "Voltar",
+                                            on_click=lambda _: page.go("/"),
+                                            icon=ft.icons.ARROW_BACK
+                                        )
+                                    ],
+                                    alignment=ft.MainAxisAlignment.CENTER,
+                                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                    expand=True
+                                ),
+                                padding=20,
+                                expand=True
+                            )
+                        ],
+                        padding=0,
+                        spacing=0,
+                    )
+                )
+                page.update()
+                return
         elif page.route == "/pdv":
             page.views.append(
                 ft.View(
@@ -181,31 +287,19 @@ def main(page: ft.Page):
                     "/printer",
                     [PrinterConfigView(page, page.data)],
                     padding=0,
+                    spacing=0,
+                )
+            )
+            page.update()
+            return
+        elif page.route == "/pdv":
+            page.views.append(
+                ft.View(
+                    route="/pdv",
+                    controls=[PDVView(page, page.data)],
                     bgcolor=ft.colors.WHITE
                 )
             )
-        elif page.route == "/despesas":
-            if not page.data.get('is_admin'):
-                page.go("/dashboard")
-            else:
-                page.views.append(
-                    ft.View(
-                        route="/despesas",
-                        controls=[DespesasView(page, page.data)],
-                        bgcolor=ft.colors.WHITE
-                    )
-                )
-        elif page.route == "/relatorio-financeiro":
-            if not page.data.get('is_admin'):
-                page.go("/dashboard")
-            else:
-                page.views.append(
-                    ft.View(
-                        route="/relatorio-financeiro",
-                        controls=[RelatorioFinanceiroView(page, page.data)],
-                        bgcolor=ft.colors.WHITE
-                    )
-                )
         elif page.route == "/busca-vendas":
             page.views.append(
                 ft.View(
@@ -289,16 +383,80 @@ def main(page: ft.Page):
                     ft.View(
                         route="/graficos",
                         controls=[GraficosView(page, page.data)],
+                        padding=0,
                         bgcolor=ft.colors.WHITE
                     )
                 )
         
+            
+        # Rota para abastecimento (mínima)
+        elif page.route == "/abastecimento":
+            # Verificar se é admin OU tem permissão de abastecimento
+            if not page.data.get('is_admin') and not page.data.get('pode_abastecer'):
+                page.go("/dashboard")
+                return
+            page.views.append(
+                ft.View(
+                    route="/abastecimento",
+                    controls=[AbastecimentoView(page, page.data)],
+                    padding=0,
+                    bgcolor=ft.colors.WHITE
+                )
+            )
+        
+        elif page.route == "/despesas":
+            # Verificar se é admin OU tem permissão de gerenciar despesas
+            if not page.data.get('is_admin') and not page.data.get('pode_gerenciar_despesas'):
+                page.go("/dashboard")
+                return
+            page.views.append(
+                ft.View(
+                    route="/despesas",
+                    controls=[DespesasView(page, page.data)],
+                    padding=0,
+                    bgcolor=ft.colors.WHITE
+                )
+            )
+        
+        elif page.route == "/relatorio-financeiro":
+            if not page.data.get('is_admin'):
+                page.go("/dashboard")
+                return
+            page.views.append(
+                ft.View(
+                    route="/relatorio-financeiro",
+                    controls=[RelatorioFinanceiroView(page, page.data)],
+                    padding=0,
+                    bgcolor=ft.colors.WHITE
+                )
+            )
+
+        
+        # Rota para página Sobre
+        elif page.route == "/sobre":
+            page.views.append(
+                ft.View(
+                    route="/sobre",
+                    controls=[SobreView(page, page.data)],
+                    bgcolor=ft.colors.WHITE
+                )
+            )
+                
         page.update()
     
     def view_pop(view):
-        page.views.pop()
-        top_view = page.views[-1]
-        page.go(top_view.route)
+        try:
+            page.views.pop()
+            # Verificar se ainda há views na lista antes de acessar
+            if len(page.views) > 0:
+                top_view = page.views[-1]
+                page.go(top_view.route)
+            else:
+                # Se não há views, ir para a rota padrão
+                page.go("/login")
+        except Exception as e:
+            print(f"Erro em view_pop: {e}")
+            page.go("/dashboard")
     
     page.on_route_change = route_change
     page.on_view_pop = view_pop
@@ -306,9 +464,20 @@ def main(page: ft.Page):
     page.go(page.route)
 
 if __name__ == "__main__":
-    ft.app(
-        target=main,
-        assets_dir="assets",
-        upload_dir="uploads",
-        web_renderer="auto"
-    )
+    # Verificar se foi solicitado modo desktop
+    desktop_mode = "--desktop" in sys.argv
+    
+    # Configurações do aplicativo
+    app_settings = {
+        "target": main,
+        "assets_dir": "assets",
+        "upload_dir": "uploads",
+        "web_renderer": "auto"
+    }
+    
+    # Se não for modo desktop, abrir no navegador
+    if not desktop_mode:
+        app_settings["view"] = ft.WEB_BROWSER
+    
+    # Iniciar o aplicativo
+    ft.app(**app_settings)

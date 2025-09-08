@@ -1,0 +1,917 @@
+import flet as ft
+import sqlite3
+import os
+import shutil
+from datetime import datetime
+from database.database import Database
+import json
+from utils.translations import get_text
+from utils.translation_mixin import TranslationMixin
+
+class ConfiguracoesView(ft.UserControl, TranslationMixin):
+    def __init__(self, page: ft.Page, usuario):
+        super().__init__()
+        self.page = page
+        self.page.bgcolor = ft.colors.WHITE
+        self.usuario = usuario
+        self.db = Database()
+        
+        # Diretório para backups
+        self.backup_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "backups")
+        if not os.path.exists(self.backup_dir):
+            os.makedirs(self.backup_dir)
+            
+        # Campos de configuração
+        self.nome_empresa = ft.TextField(
+            label=self.t("company_name"),
+            hint_text=self.t("enter_company_name"),
+            width=400,
+            height=50,
+            color=ft.colors.BLACK,
+            label_style=ft.TextStyle(color=ft.colors.BLACK)
+        )
+        
+        self.idioma = ft.Dropdown(
+            label=self.t("language"),
+            width=200,
+            options=[
+                ft.dropdown.Option("pt", "Português"),
+                ft.dropdown.Option("en", "English")
+            ],
+            value="pt",
+            color=ft.colors.BLACK,
+            label_style=ft.TextStyle(color=ft.colors.BLACK)
+        )
+        
+        # Carregar configurações atuais
+        self.carregar_configuracoes()
+        
+        # Carregar configurações existentes
+        self.config = self.carregar_configuracoes()
+
+    def fechar_dialogo(self, dlg):
+        dlg.open = False
+        self.page.update()
+
+    def carregar_configuracoes(self):
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            print(f"Erro ao carregar configurações: {e}")
+            return {}
+
+    def salvar_configuracoes(self, e):
+        try:
+            config = {
+                'nome_empresa': self.nome_empresa.value,
+                'idioma': self.idioma.value
+            }
+            
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+            
+            # Atualizar idioma na página
+            self.page.data["language"] = self.idioma.value
+            
+            # Mostrar mensagem de sucesso
+            snack = ft.SnackBar(
+                content=ft.Text(get_text("settings_saved", self.idioma.value)),
+                bgcolor=ft.colors.GREEN
+            )
+            if self.page and hasattr(self.page, "show_snack_bar"):
+                    self.page.show_snack_bar(snack)
+            self.page.update()
+            
+            # Recarregar a página para aplicar o novo idioma
+            self.page.go("/dashboard")
+            
+        except Exception as e:
+            print(f"Erro ao salvar configurações: {e}")
+            try:
+                snack = ft.SnackBar(
+                    content=ft.Text(get_text("settings_error", self.idioma.value)),
+                    bgcolor=ft.colors.RED
+                )
+                if self.page and hasattr(self.page, "show_snack_bar"):
+                    self.page.show_snack_bar(snack)
+                self.page.update()
+            except:
+                print("Erro ao mostrar mensagem de erro")
+
+    def fazer_backup(self, e):
+        try:
+            # Nome do arquivo com timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = os.path.join(self.backup_dir, f"backup_{timestamp}.db")
+            
+            # Copiar banco de dados
+            shutil.copy2(self.db.db_path, backup_file)
+            
+            snack = ft.SnackBar(
+                content=ft.Text(get_text("backup_success", self.idioma.value)),
+                bgcolor=ft.colors.GREEN
+            )
+            if self.page and hasattr(self.page, "show_snack_bar"):
+                    self.page.show_snack_bar(snack)
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao fazer backup: {e}")
+            snack = ft.SnackBar(
+                content=ft.Text(get_text("backup_error", self.idioma.value)),
+                bgcolor=ft.colors.RED
+            )
+            if self.page and hasattr(self.page, "show_snack_bar"):
+                    self.page.show_snack_bar(snack)
+            self.page.update()
+
+    def restaurar_backup(self, e):
+        try:
+            # Listar backups disponíveis
+            backups = []
+            for f in os.listdir(self.backup_dir):
+                if f.endswith('.db'):
+                    backup_path = os.path.join(self.backup_dir, f)
+                    stat = os.stat(backup_path)
+                    data = datetime.fromtimestamp(stat.st_mtime)
+                    tamanho = stat.st_size / (1024 * 1024)
+                    
+                    agora = datetime.now()
+                    diff = agora - data
+                    
+                    if diff.days > 0:
+                        tempo_decorrido = f"há {diff.days} {'dia' if diff.days == 1 else 'dias'}"
+                    elif diff.seconds >= 3600:
+                        horas = diff.seconds // 3600
+                        tempo_decorrido = f"há {horas} {'hora' if horas == 1 else 'horas'}"
+                    elif diff.seconds >= 60:
+                        minutos = diff.seconds // 60
+                        tempo_decorrido = f"há {minutos} {'minuto' if minutos == 1 else 'minutos'}"
+                    else:
+                        tempo_decorrido = f"há {diff.seconds} {'segundo' if diff.seconds == 1 else 'segundos'}"
+                    
+                    backups.append({
+                        'arquivo': f,
+                        'data': data,
+                        'tamanho': tamanho,
+                        'path': backup_path,
+                        'tempo_decorrido': tempo_decorrido
+                    })
+            
+            if not backups:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text(get_text("no_backups", self.idioma.value)),
+                        bgcolor=ft.colors.RED
+                    )
+                )
+                return
+            
+            backups.sort(key=lambda x: x['data'], reverse=True)
+            
+            # Criar lista de backups formatada
+            backup_list = ft.ListView(
+                expand=True,  # Faz a lista ocupar todo o espaço disponível
+                spacing=10,
+                padding=20,
+            )
+            
+            # Variável para controlar o item selecionado
+            self.selected_backup = None
+            
+            def select_backup(e):
+                # Atualiza a aparência de todos os containers
+                for container in backup_list.controls:
+                    if container == e.control:
+                        container.bgcolor = ft.colors.BLUE_100
+                        container.border = ft.border.all(2, ft.colors.BLUE)
+                        self.selected_backup = container.data
+                    else:
+                        container.bgcolor = ft.colors.BLUE_50
+                        container.border = ft.border.all(1, ft.colors.BLUE_200)
+                self.page.update()
+            
+            for backup in backups:
+                container = ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"📁 {backup['arquivo']}",
+                            size=16,
+                            weight=ft.FontWeight.BOLD
+                        ),
+                        ft.Row([
+                            ft.Text(
+                                f"📅 {backup['data'].strftime('%d/%m/%Y às %H:%M:%S')}",
+                                size=14
+                            ),
+                            ft.Text(
+                                f"⏱️ {backup['tempo_decorrido']}",
+                                size=14,
+                                color=ft.colors.GREY_700
+                            )
+                        ]),
+                        ft.Text(
+                            f"📊 {backup['tamanho']:.2f} MB",
+                            size=14
+                        )
+                    ]),
+                    bgcolor=ft.colors.BLUE_50,
+                    padding=10,
+                    border_radius=5,
+                    data=backup['path'],
+                    border=ft.border.all(1, ft.colors.BLUE_200),
+                    on_click=select_backup,  # Adiciona evento de clique
+                    ink=True  # Adiciona efeito de ripple ao clicar
+                )
+                
+                # Adiciona comportamento de hover usando on_hover
+                def on_hover_changed(e):
+                    e.control.bgcolor = ft.colors.BLUE_100 if e.data == "true" else ft.colors.BLUE_50
+                    self.page.update()
+                
+                container.on_hover = on_hover_changed
+                backup_list.controls.append(container)
+            
+            # Criar diálogo de confirmação
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(get_text("restore_backup", self.idioma.value)),
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Text(get_text("select_backup", self.idioma.value)),
+                        backup_list
+                    ]),
+                    width=600,  # Largura fixa para o diálogo
+                    height=400,  # Altura fixa para o diálogo
+                ),
+                actions=[
+                    ft.TextButton(
+                        get_text("cancel", self.idioma.value),
+                        on_click=lambda x: self.fechar_dialogo(dlg)
+                    ),
+                    ft.TextButton(
+                        get_text("restore", self.idioma.value),
+                        on_click=lambda x: self.confirmar_restauracao(self.selected_backup) if self.selected_backup else None
+                    )
+                ],
+                actions_alignment=ft.MainAxisAlignment.END
+            )
+            
+            self.page.dialog = dlg
+            dlg.open = True
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao listar backups: {e}")
+            snack = ft.SnackBar(
+                content=ft.Text(get_text("backup_error", self.idioma.value)),
+                bgcolor=ft.colors.RED
+            )
+            if self.page and hasattr(self.page, "show_snack_bar"):
+                    self.page.show_snack_bar(snack)
+            self.page.update()
+
+    def confirmar_restauracao(self, backup_path):
+        """
+        Confirma e executa a restauração de um backup.
+        
+        Args:
+            backup_path (str): Caminho para o arquivo de backup a ser restaurado.
+        """
+        try:
+            # Fechar o diálogo de confirmação se estiver aberto
+            dlg = getattr(self, 'dialog', None)
+            if dlg and dlg.open:
+                dlg.open = False
+            
+            # Mostrar indicador de carregamento
+            loading_snackbar = ft.SnackBar(
+                content=ft.Row([
+                    ft.ProgressRing(width=20, height=20, stroke_width=2, color=ft.colors.WHITE),
+                    ft.Text(" Restaurando backup...", color=ft.colors.WHITE)
+                ]),
+                bgcolor=ft.colors.BLUE,
+                duration=0  # Fica visível até ser fechado explicitamente
+            )
+            self.page.show_snack_bar(loading_snackbar)
+            self.page.update()
+            
+            try:
+                # 1. Fazer backup do banco atual
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pre_restore_backup = os.path.join(self.backup_dir, f"pre_restore_{timestamp}.db")
+                
+                if os.path.exists(str(self.db.db_path)):
+                    shutil.copy2(str(self.db.db_path), pre_restore_backup)
+                    print(f"Backup do banco atual criado em: {pre_restore_backup}")
+                
+                # 2. Fechar todas as conexões com o banco de forma segura
+                try:
+                    if hasattr(self.db, 'conn'):
+                        self.db.conn.close()
+                        print("Conexão com o banco de dados fechada")
+                    
+                    # 3. Aguardar um pouco para garantir que o sistema operacional libere o arquivo
+                    import time
+                    time.sleep(1)
+                    
+                    # 4. Remover o banco de dados existente se existir
+                    if os.path.exists(str(self.db.db_path)):
+                        os.remove(str(self.db.db_path))
+                    
+                    # 5. Verificar se o arquivo de backup existe e tem tamanho maior que zero
+                    if not os.path.exists(backup_path):
+                        raise FileNotFoundError(f"Arquivo de backup não encontrado: {backup_path}")
+                        
+                    backup_size = os.path.getsize(backup_path)
+                    print(f"Tamanho do arquivo de backup: {backup_size} bytes")
+                    
+                    if backup_size == 0:
+                        raise ValueError("O arquivo de backup está vazio")
+                    
+                    # 6. Copiar o backup para o local do banco de dados
+                    print(f"Restaurando backup de: {backup_path} para {self.db.db_path}")
+                    shutil.copy2(backup_path, str(self.db.db_path))
+                    print("Backup copiado com sucesso")
+                    
+                    # 7. Verificar se o arquivo foi copiado corretamente
+                    if not os.path.exists(str(self.db.db_path)):
+                        raise Exception("Falha ao copiar o arquivo de backup")
+                        
+                    # 8. Resetar o singleton do Database
+                    from database.database import Database
+                    Database._instance = None
+                    
+                    # 9. Recarregar a conexão com o banco de dados
+                    self.db = Database()
+                    
+                    # 10. Verificar se o banco foi restaurado corretamente
+                    try:
+                        cursor = self.db.conn.cursor()
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                        tables = cursor.fetchall()
+                        
+                        if not tables:
+                            raise Exception("O banco de dados restaurado não contém tabelas")
+                            
+                        print(f"Tabelas encontradas no banco restaurado: {[t[0] for t in tables]}")
+                        
+                    except sqlite3.DatabaseError as db_err:
+                        raise Exception(f"Erro ao acessar o banco de dados restaurado: {db_err}")
+                    
+                    print("Banco de dados restaurado com sucesso. Tabelas encontradas:", [t[0] for t in tables])
+                    
+                except Exception as e:
+                    # Em caso de erro, tentar restaurar o backup anterior
+                    if os.path.exists(pre_restore_backup):
+                        print("Erro durante a restauração. Tentando reverter para o backup anterior...")
+                        try:
+                            if os.path.exists(str(self.db.db_path)):
+                                os.remove(str(self.db.db_path))
+                            shutil.copy2(pre_restore_backup, str(self.db.db_path))
+                            print("Restauração do backup anterior concluída com sucesso")
+                        except Exception as restore_error:
+                            print(f"Falha ao restaurar backup anterior: {restore_error}")
+                    raise  # Relançar a exceção original
+                
+                # Esconder o indicador de carregamento
+                loading_snackbar.open = False
+                
+                # Mostrar mensagem de sucesso
+                success_snackbar = ft.SnackBar(
+                    content=ft.Text(
+                        "✅ Backup restaurado com sucesso!",
+                        color=ft.colors.WHITE,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    bgcolor=ft.colors.GREEN_700,
+                    duration=3000
+                )
+                self.page.show_snack_bar(success_snackbar)
+                
+                # Limpar dados da sessão
+                self.page.session.clear()
+                self.page.data.clear()
+                
+                # Forçar atualização da interface
+                self.page.update()
+                
+                # Redirecionar para a tela de login
+                self.page.go("/login")
+                
+                # Forçar um reload completo da página para garantir que todos os dados sejam limpos
+                self.page.window_destroy() if self.page and hasattr(self.page, "window_destroy") else None
+                self.page.window_reload() if self.page and hasattr(self.page, "window_reload") else None
+                
+            except Exception as e:
+                # Esconder o indicador de carregamento em caso de erro
+                if 'loading_snackbar' in locals():
+                    loading_snackbar.open = False
+                
+                # Mostrar mensagem de erro detalhada
+                error_msg = f"❌ Falha ao restaurar backup: {str(e)}"
+                print(error_msg)
+                
+                error_snackbar = ft.SnackBar(
+                    content=ft.Text(
+                        error_msg,
+                        color=ft.colors.WHITE,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    bgcolor=ft.colors.RED_700,
+                    duration=0  # Permanece até o usuário fechar
+                )
+                self.page.show_snack_bar(error_snackbar)
+                
+                # Tenta recriar a conexão com o banco de dados
+                try:
+                    from database.database import Database as NewDB
+                    self.db = NewDB()
+                except Exception as db_error:
+                    print(f"Falha ao recriar conexão com o banco: {db_error}")
+                
+                # Atualizar a interface
+                self.page.update()
+                
+        except Exception as e:
+            print(f"Erro inesperado durante a restauração: {e}")
+            if 'loading_snackbar' in locals():
+                loading_snackbar.open = False
+                
+            # Mostrar mensagem de erro genérica
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text(
+                        "❌ Ocorreu um erro inesperado durante a restauração. Verifique os logs para mais detalhes.",
+                        color=ft.colors.WHITE,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    bgcolor=ft.colors.RED_900,
+                    duration=0  # Permanece até o usuário fechar
+                )
+            )
+            self.page.update()
+
+    def resetar_banco(self, e):
+        try:
+            # Criar diálogo de confirmação
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(get_text("warning", self.idioma.value)),
+                content=ft.Text(get_text("reset_warning", self.idioma.value)),
+                actions=[
+                    ft.TextButton(
+                        get_text("cancel", self.idioma.value),
+                        on_click=lambda e: self.fechar_dialogo(dlg)
+                    ),
+                    ft.TextButton(
+                        get_text("reset", self.idioma.value),
+                        on_click=lambda e: self.confirmar_reset_banco(dlg),
+                        style=ft.ButtonStyle(
+                            color=ft.colors.RED
+                        )
+                    )
+                ]
+            )
+            self.page.dialog = dlg
+            dlg.open = True
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao mostrar diálogo de reset: {e}")
+
+    def confirmar_reset_banco(self, dlg):
+        """Confirma e executa o reset do banco de dados com feedback visual"""
+        try:
+            # Fecha o diálogo de confirmação
+            self.fechar_dialogo(dlg)
+            
+            # Mostra indicador de carregamento
+            loading_snackbar = ft.SnackBar(
+                content=ft.Row([
+                    ft.ProgressRing(width=20, height=20, stroke_width=2, color=ft.colors.WHITE),
+                    ft.Text(" Resetando banco de dados...", color=ft.colors.WHITE)
+                ]),
+                bgcolor=ft.colors.BLUE,
+                duration=0  # Fica visível até ser fechado explicitamente
+            )
+            self.page.show_snack_bar(loading_snackbar)
+            self.page.update()
+            
+            # Tenta resetar o banco de dados
+            if self.db.reset_database():
+                # Esconde o snackbar de carregamento
+                loading_snackbar.open = False
+                
+                # Mostra mensagem de sucesso
+                success_snackbar = ft.SnackBar(
+                    content=ft.Text(
+                        "✅ Banco de dados resetado com sucesso!",
+                        color=ft.colors.WHITE,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    bgcolor=ft.colors.GREEN_700,
+                    duration=3000
+                )
+                self.page.show_snack_bar(success_snackbar)
+                
+                # Fecha a conexão atual
+                if hasattr(self.db, 'conn'):
+                    try:
+                        self.db.conn.close()
+                    except:
+                        pass
+                
+                # Força a reinicialização do singleton do Database
+                Database._instance = None
+                
+                # Atualiza a referência do banco de dados
+                from database.database import Database as NewDB
+                self.db = NewDB()
+                
+                # Fecha o diálogo de confirmação se ainda estiver aberto
+                if dlg and dlg.open:
+                    dlg.open = False
+                
+                # Limpa os dados da sessão
+                self.page.session.clear()
+                self.page.data.clear()
+                
+                # Força a atualização da interface
+                self.page.update()
+                
+                # Redireciona para a tela de login
+                self.page.go("/login")
+                
+                # Força um reload completo da página para garantir que todos os dados sejam limpos
+                self.page.window_destroy() if self.page and hasattr(self.page, "window_destroy") else None
+                self.page.window_reload() if self.page and hasattr(self.page, "window_reload") else None
+                
+            else:
+                # Esconde o snackbar de carregamento
+                loading_snackbar.open = False
+                
+                # Mostra mensagem de erro
+                error_snackbar = ft.SnackBar(
+                    content=ft.Text(
+                        "❌ Falha ao resetar o banco de dados. Verifique os logs para mais detalhes.",
+                        color=ft.colors.WHITE,
+                        weight=ft.FontWeight.BOLD
+                    ),
+                    bgcolor=ft.colors.RED_700,
+                    duration=5000
+                )
+                self.page.show_snack_bar(error_snackbar)
+            
+        except Exception as e:
+            print(f"Erro inesperado ao resetar banco de dados: {e}")
+            
+            # Tenta esconder o snackbar de carregamento se ainda estiver visível
+            if 'loading_snackbar' in locals():
+                loading_snackbar.open = False
+            
+            # Mostra mensagem de erro detalhada
+            error_snackbar = ft.SnackBar(
+                content=ft.Text(
+                    f"❌ Erro inesperado: {str(e)}",
+                    color=ft.colors.WHITE,
+                    weight=ft.FontWeight.BOLD
+                ),
+                bgcolor=ft.colors.RED_900,
+                duration=0  # Permanece até o usuário fechar
+            )
+            self.page.show_snack_bar(error_snackbar)
+            
+            # Tenta recriar a conexão com o banco de dados
+            try:
+                from database.database import Database as NewDB
+                self.db = NewDB()
+            except Exception as db_error:
+                print(f"Falha ao recriar conexão com o banco: {db_error}")
+                
+        finally:
+            # Garante que a interface seja atualizada
+            self.page.update()
+
+    def verificar_atualizar_banco(self, e):
+        try:
+            # Tenta rodar migrações completas e garantir o esquema de abastecimento
+            ok1 = self.db.run_schema_migrations()
+            ok2 = self.db.ensure_abastecimento_schema()
+            if ok1 or ok2:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text(get_text("db_verified_updated", self.idioma.value)),
+                        bgcolor=ft.colors.GREEN
+                    )
+                )
+            else:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text(get_text("no_changes_or_failed_update", self.idioma.value)),
+                        bgcolor=ft.colors.AMBER
+                    )
+                )
+            self.page.update()
+        except Exception as err:
+            print(f"Erro ao verificar/atualizar banco: {err}")
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text(get_text("error_verifying_updating_db", self.idioma.value)),
+                    bgcolor=ft.colors.RED
+                )
+            )
+            self.page.update()
+
+    def build(self):
+        # Cabeçalho
+        header = ft.Container(
+            content=ft.Row([
+                ft.IconButton(
+                    icon=ft.icons.ARROW_BACK,
+                    on_click=lambda _: self.page.go("/dashboard")
+                ),
+                ft.Icon(
+                    name=ft.icons.SETTINGS,
+                    size=30,
+                    color=ft.colors.WHITE
+                ),
+                ft.Text(
+                    self.t("settings"),
+                    size=20,
+                    color=ft.colors.WHITE
+                )
+            ]),
+            gradient=ft.LinearGradient(
+                begin=ft.alignment.top_left,
+                end=ft.alignment.bottom_right,
+                colors=[ft.colors.BLUE_900, ft.colors.BLUE_700]
+            ),
+            padding=20,
+            border_radius=10
+        )
+
+        # Lista de controles que serão exibidos
+        controls = [header, ft.Container(height=20)]
+
+        # Configurações da Impressora (visível para todos)
+        controls.append(
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.icons.PRINT, size=24, color=ft.colors.BLUE),
+                        ft.Text(
+                            "Impressora",
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.colors.GREEN
+                        )
+                    ]),
+                    ft.ElevatedButton(
+                        "Configurar Impressora",
+                        icon=ft.icons.SETTINGS,
+                        on_click=lambda _: self.page.go("/printer"),
+                    )
+                ]),
+                bgcolor=ft.colors.WHITE,
+                padding=20,
+                border_radius=10
+            )
+        )
+
+        # Se for admin, adiciona as outras configurações
+        if self.usuario.get('is_admin'):
+            # Configurações Gerais
+            controls.extend([
+                ft.Container(height=20),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            self.t("general_settings"),
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.colors.BLACK
+                        ),
+                        self.nome_empresa,
+                        self.idioma,
+                        ft.ElevatedButton(
+                            text=self.t("save_settings"),
+                            icon=ft.icons.SAVE,
+                            bgcolor=ft.colors.GREEN,
+                            color=ft.colors.WHITE,
+                            on_click=self.salvar_configuracoes
+                        )
+                    ]),
+                    bgcolor=ft.colors.WHITE,
+                    padding=20,
+                    border_radius=10
+                ),
+
+                # Backup e Restauração
+                ft.Container(height=5),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            self.t("backup_restore"),
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.colors.BLACK
+                        ),
+                        ft.Row([
+                            ft.ElevatedButton(
+                                text=self.t("make_backup"),
+                                icon=ft.icons.BACKUP,
+                                bgcolor=ft.colors.BLUE,
+                                color=ft.colors.WHITE,
+                                on_click=self.fazer_backup
+                            ),
+                            ft.ElevatedButton(
+                                text=self.t("restore_backup"),
+                                icon=ft.icons.RESTORE,
+                                bgcolor=ft.colors.ORANGE,
+                                color=ft.colors.WHITE,
+                                on_click=self.restaurar_backup
+                            ),
+                            ft.ElevatedButton(
+                                text=self.t("delete_backups"),
+                                icon=ft.icons.DELETE_FOREVER,
+                                bgcolor=ft.colors.RED,
+                                color=ft.colors.WHITE,
+                                on_click=self.deletar_backups
+                            ),
+                            ft.ElevatedButton(
+                                text=(self.t("verify_update_db") if hasattr(self, 't') else "Verificar e Atualizar Banco"),
+                                icon=ft.icons.BUILD_CIRCLE,
+                                bgcolor=ft.colors.BLUE_GREY,
+                                color=ft.colors.WHITE,
+                                on_click=self.verificar_atualizar_banco
+                            ),
+                # Reset do Sistema
+                ft.Container(height=5),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(self.t("system_reset_warning_title") if hasattr(self, 't') else "Reset do Sistema"),
+                        ft.ElevatedButton(
+                            text=self.t("reset_database"),
+                            icon=ft.icons.WARNING_ROUNDED,
+                            bgcolor=ft.colors.RED_900,
+                            color=ft.colors.WHITE,
+                            on_click=self.confirmar_reset_banco
+                        )
+                    ]),
+                    bgcolor=ft.colors.WHITE,
+                    padding=20,
+                    border_radius=10
+                )
+                        ])
+                    ]),
+                    bgcolor=ft.colors.WHITE,
+                    padding=20,
+                    border_radius=10
+                ),
+
+                
+            ])
+
+        return ft.Column(controls)
+
+    def deletar_backups(self, e):
+        """Abre diálogo para deletar backups"""
+        try:
+            # Listar backups disponíveis
+            backups = []
+            for f in os.listdir(self.backup_dir):
+                if f.endswith('.db'):
+                    backup_path = os.path.join(self.backup_dir, f)
+                    stat = os.stat(backup_path)
+                    data = datetime.fromtimestamp(stat.st_mtime)
+                    tamanho = stat.st_size / (1024 * 1024)
+                    
+                    backups.append({
+                        'arquivo': f,
+                        'data': data,
+                        'tamanho': tamanho,
+                        'path': backup_path
+                    })
+            
+            if not backups:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text(self.t("no_backups")),
+                        bgcolor=ft.colors.RED
+                    )
+                )
+                return
+            
+            # Ordenar por data (mais recente primeiro)
+            backups.sort(key=lambda x: x['data'], reverse=True)
+            
+            # Criar lista de backups formatada
+            backup_list = ft.ListView(
+                expand=True,
+                spacing=10,
+                padding=20,
+            )
+            
+            # Lista para controlar seleções
+            selected_backups = []
+            
+            def toggle_backup(e, backup_path):
+                if backup_path in selected_backups:
+                    selected_backups.remove(backup_path)
+                    e.control.bgcolor = ft.colors.BLUE_50
+                else:
+                    selected_backups.append(backup_path)
+                    e.control.bgcolor = ft.colors.RED_100
+                self.page.update()
+            
+            for backup in backups:
+                container = ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"📁 {backup['arquivo']}",
+                            size=16,
+                            weight=ft.FontWeight.BOLD
+                        ),
+                        ft.Row([
+                            ft.Text(
+                                f"📅 {backup['data'].strftime('%d/%m/%Y às %H:%M:%S')}",
+                                size=14
+                            ),
+                            ft.Text(
+                                f"📊 {backup['tamanho']:.2f} MB",
+                                size=14
+                            )
+                        ])
+                    ]),
+                    bgcolor=ft.colors.BLUE_50,
+                    padding=10,
+                    border_radius=5,
+                    ink=True,
+                    on_click=lambda e, path=backup['path']: toggle_backup(e, path)
+                )
+                backup_list.controls.append(container)
+            
+            def confirmar_delecao(e):
+                try:
+                    for backup_path in selected_backups:
+                        os.remove(backup_path)
+                    
+                    dlg_modal.open = False
+                    self.page.update()
+                    
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            content=ft.Text(self.t("backups_deleted")),
+                            bgcolor=ft.colors.GREEN
+                        )
+                    )
+                except Exception as e:
+                    print(f"Erro ao deletar backups: {e}")
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            content=ft.Text(self.t("error_deleting_backups")),
+                            bgcolor=ft.colors.RED
+                        )
+                    )
+            
+            # Diálogo de confirmação
+            dlg_modal = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(self.t("delete_backups")),
+                content=ft.Column([
+                    ft.Text(self.t("select_backups_delete")),
+                    backup_list
+                ]),
+                actions=[
+                    ft.TextButton(
+                        self.t("cancel"),
+                        on_click=lambda x: setattr(dlg_modal, 'open', False)
+                    ),
+                    ft.TextButton(
+                        self.t("delete"),
+                        on_click=confirmar_delecao,
+                        style=ft.ButtonStyle(
+                            color=ft.colors.RED
+                        )
+                    )
+                ]
+            )
+            
+            self.page.dialog = dlg_modal
+            dlg_modal.open = True
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao listar backups: {e}")
+            self.page.show_snack_bar(
+                ft.SnackBar(
+                    content=ft.Text(self.t("error_listing_backups")),
+                    bgcolor=ft.colors.RED
+                )
+            )

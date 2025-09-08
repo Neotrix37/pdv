@@ -199,16 +199,16 @@ class RelatorioFinanceiroView(ft.UserControl):
     def criar_card_metrica(self, titulo, valor, icone, cor=ft.colors.BLUE):
         return ft.Container(
             content=ft.Column([
-                ft.Icon(name=icone, size=30, color=cor),
-                ft.Text(titulo, size=16, weight=ft.FontWeight.BOLD),
-                ft.Text(valor, size=20, color=cor)
+                ft.Icon(name=icone, size=24, color=cor),
+                ft.Text(titulo, size=14, weight=ft.FontWeight.BOLD),
+                ft.Text(valor, size=16, color=cor)
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            width=200,
+            width=160,
             bgcolor=ft.colors.WHITE,
             border=ft.border.all(1, ft.colors.BLACK12),
-            border_radius=10,
-            padding=15,
-            margin=5
+            border_radius=8,
+            padding=10,
+            margin=3
         )
 
     def calcular_metricas(self):
@@ -247,13 +247,13 @@ class RelatorioFinanceiroView(ft.UserControl):
             vendas = self.db.fetchall(vendas_query, (data_inicial, data_final), dictionary=True)
 
             formas_pagamento = {
-                v['forma_pagamento']: v['total']
+                v['forma_pagamento']: v['total'] if v['total'] is not None else 0
                 for v in vendas
             }
 
-            total_vendas = sum(v['total'] for v in vendas) if vendas else 0
-            lucro_total = sum(v['lucro'] for v in vendas) if vendas else 0
-            num_vendas = sum(v['num_vendas'] for v in vendas) if vendas else 0
+            total_vendas = sum(v['total'] if v['total'] is not None else 0 for v in vendas) if vendas else 0
+            lucro_total = sum(v['lucro'] if v['lucro'] is not None else 0 for v in vendas) if vendas else 0
+            num_vendas = sum(v['num_vendas'] if v['num_vendas'] is not None else 0 for v in vendas) if vendas else 0
             receita_bruta = total_vendas
             ticket_medio = receita_bruta / num_vendas if num_vendas > 0 else 0
 
@@ -277,7 +277,7 @@ class RelatorioFinanceiroView(ft.UserControl):
                     AND (v.status IS NULL OR v.status != 'Anulada')
             """, (data_inicial, data_final), dictionary=True)
 
-            custo_produtos = custos['total'] if custos and custos['total'] else 0
+            custo_produtos = custos['total'] if custos and custos['total'] is not None else 0
             lucro_bruto = receita_bruta - custo_produtos
             margem_bruta = (lucro_bruto / receita_bruta * 100) if receita_bruta > 0 else 0
 
@@ -303,17 +303,61 @@ class RelatorioFinanceiroView(ft.UserControl):
             # Detalhamento das despesas
             despesas_detalhadas = []
             
-            # Adicionar despesas recorrentes
+            # Primeiro, ver todas as despesas, independente do status
+            print("\n=== TODAS AS DESPESAS CADASTRADAS ===")
+            todas_despesas = self.db.fetchall("""
+                SELECT 
+                    id,
+                    data_vencimento,
+                    tipo,
+                    categoria,
+                    descricao, 
+                    valor,
+                    status
+                FROM despesas_recorrentes
+                ORDER BY data_vencimento DESC
+            """, dictionary=True)
+            
+            if todas_despesas:
+                print(f"\nTotal de despesas cadastradas: {len(todas_despesas)}")
+                print("\nÚltimas 5 despesas:")
+                for i, despesa in enumerate(todas_despesas[:5], 1):
+                    print(f"{i}. ID: {despesa['id']} | Data: {despesa['data_vencimento']} | "
+                          f"Tipo: {despesa['tipo']} | Categoria: {despesa['categoria']} | "
+                          f"Valor: MT {despesa['valor']} | Status: {despesa['status']} | "
+                          f"Descrição: {despesa['descricao']}")
+            else:
+                print("Nenhuma despesa encontrada no banco de dados!")
+            
+            # Agora busca as despesas para o relatório (apenas pagas no período)
+            print(f"\n=== BUSCANDO DESPESAS PARA O RELATÓRIO ===")
+            print(f"Período: {data_inicial} até {data_final} | Status: Pago")
+            
             despesas_recorrentes_detail = self.db.fetchall("""
-                SELECT descricao, valor
+                SELECT 
+                    id,
+                    data_vencimento,
+                    tipo,
+                    categoria,
+                    descricao, 
+                    valor,
+                    status
                 FROM despesas_recorrentes
                 WHERE DATE(data_vencimento) BETWEEN ? AND ?
                     AND status = 'Pago'
-                ORDER BY valor DESC
+                ORDER BY data_vencimento DESC, valor DESC
             """, (data_inicial, data_final), dictionary=True)
             
+            print(f"\nTotal de despesas encontradas para o relatório: {len(despesas_recorrentes_detail)}")
             if despesas_recorrentes_detail:
-                despesas_detalhadas.extend(despesas_recorrentes_detail)
+                print("\nDetalhes das despesas encontradas:")
+                for i, despesa in enumerate(despesas_recorrentes_detail, 1):
+                    print(f"{i}. ID: {despesa['id']} | Data: {despesa['data_vencimento']} | "
+                          f"Tipo: {despesa['tipo']} | Categoria: {despesa['categoria']} | "
+                          f"Valor: MT {despesa['valor']} | Status: {despesa['status']}")
+            
+            print("\n=== FIM DA CONSULTA DE DESPESAS ===\n")
+            despesas_detalhadas.extend(despesas_recorrentes_detail)
 
             # Adicionar total de salários como uma despesa
             if total_salarios > 0:
@@ -323,7 +367,7 @@ class RelatorioFinanceiroView(ft.UserControl):
                 })
 
             # Cálculo de lucro líquido
-            lucro_liquido = lucro_bruto - total_despesas
+            lucro_liquido = (lucro_bruto if lucro_bruto is not None else 0) - (total_despesas if total_despesas is not None else 0)
             margem_liquida = (lucro_liquido / receita_bruta * 100) if receita_bruta > 0 else 0
 
             # Análise de produtos mais vendidos
@@ -402,7 +446,9 @@ class RelatorioFinanceiroView(ft.UserControl):
                     'total': total_despesas,
                     'salarios': total_salarios,
                     'recorrentes': total_despesas_recorrentes,
-                    'detalhadas': despesas_detalhadas
+                    'detalhadas': despesas_detalhadas,
+                    'categorias': {d['categoria']: sum(d2['valor'] for d2 in despesas_detalhadas if d2.get('categoria') == d['categoria']) 
+                                 for d in despesas_detalhadas if 'categoria' in d}
                 },
                 'resultados': {
                     'lucro_liquido': lucro_liquido,
@@ -416,10 +462,10 @@ class RelatorioFinanceiroView(ft.UserControl):
                 'produtos_mais_vendidos': [
                     {
                         'produto': p['produto'],
-                        'quantidade': p['quantidade'],
-                        'vendas': p['total_vendas'],
-                        'custos': p['total_custos'],
-                        'lucro': p['lucro']
+                        'quantidade': p['quantidade'] if p['quantidade'] is not None else 0,
+                        'vendas': p['total_vendas'] if p['total_vendas'] is not None else 0,
+                        'custos': p['total_custos'] if p['total_custos'] is not None else 0,
+                        'lucro': p['lucro'] if p['lucro'] is not None else 0
                     } for p in produtos_vendidos
                 ] if produtos_vendidos else [],
                 'tendencia_mensal': self.calcular_tendencia_mensal(data_final)
@@ -463,10 +509,10 @@ class RelatorioFinanceiroView(ft.UserControl):
             return [
                 {
                     'mes': t['mes'],
-                    'num_vendas': t['num_vendas'],
-                    'total': t['total_vendas'],
-                    'ticket_medio': t['ticket_medio'],
-                    'lucro': t['lucro']
+                    'num_vendas': t['num_vendas'] if t['num_vendas'] is not None else 0,
+                    'total': t['total_vendas'] if t['total_vendas'] is not None else 0,
+                    'ticket_medio': t['ticket_medio'] if t['ticket_medio'] is not None else 0,
+                    'lucro': t['lucro'] if t['lucro'] is not None else 0
                 } for t in tendencia
             ] if tendencia else []
 
@@ -539,6 +585,33 @@ class RelatorioFinanceiroView(ft.UserControl):
                 ])
             ])
 
+            # Criar linhas da tabela de despesas detalhadas
+            linhas_despesas = [
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text(d['descricao'][:30] + ('...' if len(d['descricao']) > 30 else ''))),
+                        ft.DataCell(ft.Text(d.get('categoria', 'N/A'))),
+                        ft.DataCell(ft.Text(f"MT {d['valor']:.2f}", text_align=ft.TextAlign.RIGHT)),
+                    ]
+                ) for d in dados['despesas'].get('detalhadas', [])[:5]  # Mostrar até 5 despesas
+            ]
+
+            # Adicionar linha de total
+            linhas_despesas.append(
+                ft.DataRow(
+                    cells=[
+                        ft.DataCell(ft.Text("Total", weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text("", weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(
+                            f"MT {dados['despesas']['total']:.2f}", 
+                            weight=ft.FontWeight.BOLD,
+                            text_align=ft.TextAlign.RIGHT
+                        )),
+                    ],
+                    color=ft.colors.GREY_200
+                )
+            )
+
             # Atualizar container de despesas
             self.despesas_container.content = ft.Column([
                 ft.Row([
@@ -556,6 +629,32 @@ class RelatorioFinanceiroView(ft.UserControl):
                     )
                 ]),
                 ft.Container(height=10),
+                # Tabela de despesas detalhadas
+                ft.Text("Despesas Detalhadas", size=14, weight=ft.FontWeight.BOLD),
+                ft.Container(
+                    content=ft.ListView(
+                        [
+                            ft.DataTable(
+                                columns=[
+                                    ft.DataColumn(ft.Text("Descrição")),
+                                    ft.DataColumn(ft.Text("Categoria")),
+                                    ft.DataColumn(ft.Text("Valor"), numeric=True),
+                                ],
+                                rows=linhas_despesas,
+                                border=ft.border.all(1, ft.colors.GREY_300),
+                                border_radius=5,
+                                heading_row_color=ft.colors.BLUE_50,
+                                heading_text_style=ft.TextStyle(weight=ft.FontWeight.BOLD),
+                                data_row_height=40,
+                                horizontal_margin=10,
+                                column_spacing=20,
+                                show_bottom_border=True,
+                            )
+                        ],
+                        height=min(300, max(100, len(linhas_despesas) * 40)),
+                    ),
+                    margin=ft.margin.only(top=5, bottom=10),
+                ),
                 ft.Row([
                     self.criar_card_metrica(
                         "Lucro Líquido",
@@ -954,11 +1053,17 @@ class RelatorioFinanceiroView(ft.UserControl):
             ])
 
             # Adicionar seção de despesas detalhadas após o resumo financeiro
-            dados_despesas = [["Descrição", "Valor"]]
+            dados_despesas = [["Data", "Tipo", "Categoria", "Descrição", "Valor"]]
             
             if dados['despesas']['detalhadas']:
                 for despesa in dados['despesas']['detalhadas']:
+                    # Formatar a data de vencimento para o padrão brasileiro
+                    data_formatada = datetime.strptime(despesa['data_vencimento'], '%Y-%m-%d').strftime('%d/%m/%Y') if 'data_vencimento' in despesa and despesa['data_vencimento'] else 'N/D'
+                    
                     dados_despesas.append([
+                        data_formatada,
+                        despesa.get('tipo', 'N/D'),
+                        despesa.get('categoria', 'N/D'),
                         despesa['descricao'],
                         f"MT {despesa['valor']:,.2f}"
                     ])
@@ -968,21 +1073,27 @@ class RelatorioFinanceiroView(ft.UserControl):
                 f"MT {dados['despesas']['total']:,.2f}"
             ])
 
-            tabela_despesas = Table(dados_despesas, colWidths=[150, 150])
+            # Ajustar larguras das colunas para acomodar os novos campos
+            tabela_despesas = Table(dados_despesas, colWidths=[70, 70, 100, 150, 80])
             tabela_despesas.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('ALIGN', (1, 0), (1, -1), 'RIGHT'),  # Alinhar valores à direita
+                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                ('ALIGN', (0, 1), (0, -1), 'CENTER'),
+                ('ALIGN', (1, 1), (1, -1), 'CENTER'),
+                ('ALIGN', (2, 1), (2, -1), 'LEFT'),
+                ('ALIGN', (3, 1), (3, -1), 'LEFT'),
+                ('ALIGN', (4, 1), (4, -1), 'RIGHT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-                ('FONTSIZE', (0, 1), (-1, -1), 9),
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
                 ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e0e0e0')),
-                # Destacar o total
                 ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f5f5f5')),
-                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold')
+                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                ('SPAN', (0, -1), (3, -1)),
+                ('ALIGN', (0, -1), (3, -1), 'RIGHT')
             ]))
 
             # Inserir a tabela de despesas após o resumo financeiro
@@ -1141,12 +1252,39 @@ class RelatorioFinanceiroView(ft.UserControl):
             # DataFrame de Produtos
             df_produtos = pd.DataFrame(dados['produtos_mais_vendidos'])
 
+            # DataFrame de Despesas Detalhadas
+            despesas_data = []
+            for despesa in dados['despesas']['detalhadas']:
+                despesas_data.append({
+                    'Data': despesa.get('data_vencimento', 'N/D'),
+                    'Tipo': despesa.get('tipo', 'N/D'),
+                    'Categoria': despesa.get('categoria', 'N/D'),
+                    'Descrição': despesa.get('descricao', ''),
+                    'Valor': despesa.get('valor', 0),
+                    'Status': despesa.get('status', 'N/D')
+                })
+            
+            # Adicionar linha de total
+            if despesas_data:
+                despesas_data.append({
+                    'Data': 'TOTAL',
+                    'Tipo': '',
+                    'Categoria': '',
+                    'Descrição': '',
+                    'Valor': dados['despesas']['total'],
+                    'Status': ''
+                })
+            
+            df_despesas = pd.DataFrame(despesas_data)
+
             print("Salvando Excel...")
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
                 df_vendas.to_excel(writer, sheet_name='Vendas', index=False)
                 df_resultados.to_excel(writer, sheet_name='Resultados', index=False)
                 if not df_produtos.empty:
                     df_produtos.to_excel(writer, sheet_name='Produtos Mais Vendidos', index=False)
+                if not df_despesas.empty:
+                    df_despesas.to_excel(writer, sheet_name='Despesas Detalhadas', index=False)
 
             print(f"Excel gerado com sucesso: {filename}")
             os.startfile(filename)

@@ -1,5 +1,6 @@
 import flet as ft
 from database.database import Database
+from repositories.cliente_repository import ClienteRepository
 from utils.translation_mixin import TranslationMixin
 from views.generic_table_style import apply_table_style
 
@@ -10,6 +11,7 @@ class ClientesView(ft.UserControl, TranslationMixin):
         self.page = page
         self.usuario = usuario
         self.db = Database()
+        self.cliente_repo = ClienteRepository()
         self.lang = page.data.get("language", "pt")
         
         # Campos do formulário com estilo consistente
@@ -225,68 +227,66 @@ class ClientesView(ft.UserControl, TranslationMixin):
 
     def carregar_clientes(self):
         try:
-            clientes = self.db.fetchall("""
-                SELECT id, nome, nuit, telefone, email, especial, desconto_divida
-                FROM clientes
-                ORDER BY nome
-            """)
-            
-            self.table.rows = [
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(ft.Text(c["nome"], color=ft.colors.GREY_900)),
-                        ft.DataCell(ft.Text(c["nuit"] or "-", color=ft.colors.GREY_900)),
-                        ft.DataCell(ft.Text(c["telefone"] or "-", color=ft.colors.GREY_900)),
-                        ft.DataCell(ft.Text(c["email"] or "-", color=ft.colors.GREY_900)),
-                        ft.DataCell(
-                            ft.Text(
-                                "Sim" if c["especial"] else "Não",
-                                color=ft.colors.GREEN if c["especial"] else ft.colors.GREY_900,
-                                weight=ft.FontWeight.BOLD if c["especial"] else ft.FontWeight.NORMAL
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Text(
-                                f"{c['desconto_divida'] * 100:.1f}%" if c["especial"] and c["desconto_divida"] else "-",
-                                color=ft.colors.BLUE if c["especial"] and c["desconto_divida"] else ft.colors.GREY_900
-                            )
-                        ),
-                        ft.DataCell(
-                            ft.Row([
-                                ft.IconButton(
-                                    icon=ft.icons.EDIT,
-                                    icon_color=ft.colors.BLUE,
-                                    tooltip="Editar",
-                                    data=c["id"],
-                                    on_click=lambda e, id=c["id"]: self.editar_cliente(e)
-                                ),
-                                ft.IconButton(
-                                    icon=ft.icons.DELETE,
-                                    icon_color=ft.colors.RED,
-                                    tooltip="Excluir",
-                                    data=c["id"],
-                                    on_click=self.excluir_cliente
-                                )
-                            ])
-                        )
-                    ]
-                ) for c in clientes
-            ]
-            self.update()
+            clientes = self.cliente_repo.listar_todos()
+            self._atualizar_tabela_clientes(clientes)
         except Exception as ex:
             print(f"Erro ao carregar clientes: {ex}")
+    
+    def _atualizar_tabela_clientes(self, clientes):
+        """Atualiza a tabela com a lista de clientes fornecida."""
+        self.table.rows = [
+            ft.DataRow(
+                cells=[
+                    ft.DataCell(ft.Text(c["nome"], color=ft.colors.GREY_900)),
+                    ft.DataCell(ft.Text(c["nuit"] or "-", color=ft.colors.GREY_900)),
+                    ft.DataCell(ft.Text(c["telefone"] or "-", color=ft.colors.GREY_900)),
+                    ft.DataCell(ft.Text(c["email"] or "-", color=ft.colors.GREY_900)),
+                    ft.DataCell(
+                        ft.Text(
+                            "Sim" if c["especial"] else "Não",
+                            color=ft.colors.GREEN if c["especial"] else ft.colors.GREY_900,
+                            weight=ft.FontWeight.BOLD if c["especial"] else ft.FontWeight.NORMAL
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.Text(
+                            f"{c['desconto_divida'] * 100:.1f}%" if c["especial"] and c["desconto_divida"] else "-",
+                            color=ft.colors.BLUE if c["especial"] and c["desconto_divida"] else ft.colors.GREY_900
+                        )
+                    ),
+                    ft.DataCell(
+                        ft.Row([
+                            ft.IconButton(
+                                icon=ft.icons.EDIT,
+                                icon_color=ft.colors.BLUE,
+                                tooltip="Editar",
+                                data=c["id"],
+                                on_click=lambda e, id=c["id"]: self.editar_cliente(e)
+                            ),
+                            ft.IconButton(
+                                icon=ft.icons.DELETE,
+                                icon_color=ft.colors.RED,
+                                tooltip="Excluir",
+                                data=c["id"],
+                                on_click=self.excluir_cliente
+                            )
+                        ])
+                    )
+                ]
+            ) for c in clientes
+        ]
+        self.update()
 
     def filtrar_clientes(self, e):
         termo = e.control.value.lower()
         try:
-            clientes = self.db.fetchall("""
-                SELECT id, nome, nuit, telefone, email
-                FROM clientes
-                WHERE LOWER(nome) LIKE ? OR LOWER(nuit) LIKE ?
-                ORDER BY nome
-            """, (f"%{termo}%", f"%{termo}%"))
+            if termo:
+                clientes = self.cliente_repo.buscar_por_nome_ou_nuit(termo)
+            else:
+                clientes = self.cliente_repo.listar_todos()
             
-            self.carregar_clientes()  # Recarrega a tabela com os resultados filtrados
+            # Atualizar tabela com resultados filtrados
+            self._atualizar_tabela_clientes(clientes)
             
         except Exception as ex:
             print(f"Erro ao filtrar clientes: {ex}")
@@ -322,26 +322,15 @@ class ClientesView(ft.UserControl, TranslationMixin):
 
             if self.cliente_em_edicao:
                 # Atualizar cliente existente
-                self.db.execute("""
-                    UPDATE clientes 
-                    SET nome = :nome,
-                        nuit = :nuit,
-                        telefone = :telefone,
-                        endereco = :endereco,
-                        email = :email,
-                        especial = :especial,
-                        desconto_divida = :desconto_divida
-                    WHERE id = :id
-                """, {**dados, 'id': self.cliente_em_edicao})
-                
+                resultado = self.cliente_repo.update(self.cliente_em_edicao, dados)
+                if not resultado:
+                    raise Exception("Falha ao atualizar cliente")
                 mensagem = "✅ Cliente atualizado com sucesso!"
             else:
                 # Inserir novo cliente
-                self.db.execute("""
-                    INSERT INTO clientes (nome, nuit, telefone, endereco, email, especial, desconto_divida)
-                    VALUES (:nome, :nuit, :telefone, :endereco, :email, :especial, :desconto_divida)
-                """, dados)
-                
+                resultado = self.cliente_repo.create(dados)
+                if not resultado:
+                    raise Exception("Falha ao criar cliente")
                 mensagem = "✅ Cliente cadastrado com sucesso!"
 
             self.limpar_formulario(None)
@@ -370,11 +359,7 @@ class ClientesView(ft.UserControl, TranslationMixin):
             # Pega o ID diretamente do botão clicado
             cliente_id = e.control.data
             
-            cliente = self.db.fetchone("""
-                SELECT id, nome, nuit, telefone, endereco, email, especial, desconto_divida
-                FROM clientes 
-                WHERE id = ?
-            """, (cliente_id,))
+            cliente = self.cliente_repo.get_by_id(cliente_id)
             
             if cliente:
                 self.cliente_em_edicao = cliente['id']
@@ -412,7 +397,9 @@ class ClientesView(ft.UserControl, TranslationMixin):
     def excluir_cliente(self, e):
         try:
             if e.control.data:
-                self.db.execute("DELETE FROM clientes WHERE id = ?", (e.control.data,))
+                resultado = self.cliente_repo.delete(e.control.data)
+                if not resultado:
+                    raise Exception("Falha ao excluir cliente")
                 self.carregar_clientes()
                 self.page.show_snack_bar(
                     ft.SnackBar(
