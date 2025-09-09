@@ -379,7 +379,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     ),
                     ft.Container(width=20),  # Espaçador
                     ft.Text(
-                        f"{self.t('welcome')}, {self.usuario['nome']}!",
+                        f"{self.t('welcome')}, {self.usuario.get('nome', 'Usuário')}!",
                         size=16,
                         color=ft.colors.WHITE
                     ),
