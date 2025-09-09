@@ -5,9 +5,13 @@ Entry point para hospedagem web do PDV3
 import flet as ft
 import os
 import sys
+import platform
 
-# Adicionar o diretório atual ao path
+# Adicionar o diretório atual ao path para imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Configurar modo web antes de importar módulos
+os.environ['WEB_MODE'] = 'true'
 
 # Importar o main original
 from main import main

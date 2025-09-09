@@ -2,7 +2,11 @@ import flet as ft
 import traceback
 from database.database import Database
 from views.generic_header import create_header
-from utils.rongta_printer import RongtaPrinter
+import os
+if os.getenv('WEB_MODE') == 'true':
+    from utils.rongta_printer_web import RongtaPrinter
+else:
+    from utils.rongta_printer import RongtaPrinter
 from datetime import datetime
 
 class PDVView(ft.UserControl):
