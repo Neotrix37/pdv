@@ -397,6 +397,14 @@ class PDVView(ft.UserControl):
             pass
         return os.getenv('BACKEND_URL', 'http://localhost:8000')
 
+    def _get_api_base(self) -> str:
+        base = (self._get_backend_url() or '').rstrip('/')
+        if base.endswith('/api'):
+            return base
+        if base.endswith('/api/'):
+            return base[:-1]
+        return base + '/api'
+
     def filtrar_produtos(self, e):
         try:
             busca = self.busca_field.value.lower() if self.busca_field.value else ""
@@ -501,7 +509,7 @@ class PDVView(ft.UserControl):
         try:
             if self._is_web():
                 # Buscar produtos do backend e preencher cache
-                base = self._get_backend_url().rstrip('/') + "/api"
+                base = self._get_api_base()
                 produtos = []
                 try:
                     url1 = f"{base}/produtos/"

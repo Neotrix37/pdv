@@ -385,10 +385,18 @@ class DashboardView(ft.UserControl, TranslationMixin):
             pass
         return os.getenv('BACKEND_URL', 'http://localhost:8000')
 
+    def _get_api_base(self) -> str:
+        """Retorna a base da API, garantindo que haja exatamente um '/api'."""
+        base = (self._get_backend_url() or '').rstrip('/')
+        if base.endswith('/api'):
+            return base
+        if base.endswith('/api/'):
+            return base[:-1]
+        return base + '/api'
+
     def _fetch_web_dashboard_numbers_sync(self):
         """Versão síncrona: busca números de vendas no backend e atualiza os cards (para web)."""
-        base = self._get_backend_url().rstrip('/')
-        api_base = base + "/api"
+        api_base = self._get_api_base()
         try:
             hoje = datetime.now().date().isoformat()
             ano_mes = datetime.now().strftime('%Y-%m')
