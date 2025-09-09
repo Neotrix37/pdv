@@ -398,29 +398,49 @@ class DashboardView(ft.UserControl, TranslationMixin):
             lucro_dia = 0.0
             lucro_mes = 0.0
 
-            # Tentar com e sem barra final
-            url1 = f"{api_base}/vendas/"
-            url2 = f"{api_base}/vendas"
-            print(f"[WEB] Dashboard buscando vendas em: {url1}")
+            # Preferir endpoints de métricas (com fallback)
+            url_dia_1 = f"{api_base}/metricas/vendas-dia"
+            url_mes_1 = f"{api_base}/metricas/vendas-mes"
             with httpx.Client(timeout=10.0) as client:
-                resp = client.get(url1)
-                if resp.status_code == 404:
-                    print(f"[WEB] 404 em {url1}, tentando {url2}")
-                    resp = client.get(url2)
-                if resp.status_code == 200:
-                    vendas = resp.json() or []
-                    for v in vendas:
-                        status = (v.get('status') or '').lower()
-                        if status == 'anulada':
-                            continue
-                        total = float(v.get('total') or 0)
-                        data_venda = v.get('data_venda') or ''
-                        if data_venda.startswith(hoje):
-                            vendas_dia += total
-                        if data_venda.startswith(ano_mes):
-                            vendas_mes += total
-                else:
-                    print(f"[WEB] Falha ao buscar vendas ({resp.status_code}) em {url1} e {url2}")
+                try:
+                    print(f"[WEB] Dashboard buscando métricas em: {url_dia_1} e {url_mes_1}")
+                    resp_dia = client.get(url_dia_1)
+                    resp_mes = client.get(url_mes_1)
+                    if resp_dia.status_code == 200:
+                        payload = resp_dia.json() or {}
+                        vendas_dia = float(payload.get('total') or 0.0)
+                    else:
+                        print(f"[WEB] Falha ao buscar vendas-dia ({resp_dia.status_code}) em {url_dia_1}")
+                    if resp_mes.status_code == 200:
+                        payload = resp_mes.json() or {}
+                        vendas_mes = float(payload.get('total') or 0.0)
+                    else:
+                        print(f"[WEB] Falha ao buscar vendas-mes ({resp_mes.status_code}) em {url_mes_1}")
+                except Exception as ex:
+                    print(f"[WEB] Erro ao buscar métricas: {ex}. Fallback para listar vendas...")
+                    # Fallback: listar vendas e somar
+                    url1 = f"{api_base}/vendas/"
+                    url2 = f"{api_base}/vendas"
+                    try:
+                        resp = client.get(url1)
+                        if resp.status_code == 404:
+                            resp = client.get(url2)
+                        if resp.status_code == 200:
+                            vendas = resp.json() or []
+                            for v in vendas:
+                                status = (v.get('status') or '').lower()
+                                if status == 'anulada':
+                                    continue
+                                total = float(v.get('total') or 0)
+                                data_venda = v.get('data_venda') or ''
+                                if data_venda.startswith(hoje):
+                                    vendas_dia += total
+                                if data_venda.startswith(ano_mes):
+                                    vendas_mes += total
+                        else:
+                            print(f"[WEB] Falha ao buscar vendas no fallback ({resp.status_code}) em {url1} e {url2}")
+                    except Exception as ex2:
+                        print(f"[WEB] Erro no fallback listar vendas: {ex2}")
 
             # Atualizar textos
             self.vendas_dia.value = f"MT {vendas_dia:.2f}"
