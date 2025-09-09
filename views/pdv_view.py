@@ -3,6 +3,7 @@ import traceback
 from database.database import Database
 from views.generic_header import create_header
 import os
+import httpx
 if os.getenv('WEB_MODE') == 'true':
     from utils.rongta_printer_web import RongtaPrinter
 else:
@@ -46,6 +47,8 @@ class PDVView(ft.UserControl):
         
         self.itens = []
         self.total_venda = 0.0
+        # Cache de produtos (especialmente para modo web)
+        self._produtos_cache = []
 
         # Campo de busca
         self.busca_field = ft.TextField(
@@ -372,60 +375,93 @@ class PDVView(ft.UserControl):
                 self.carregar_venda_atual()
                 self.salvar_venda_pendente()
 
+    def _is_web(self) -> bool:
+        try:
+            return os.getenv('WEB_MODE', '').lower() == 'true'
+        except Exception:
+            return False
+
+    def _get_backend_url(self) -> str:
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                import json
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    conf = json.load(f)
+                    return conf.get('server_url', os.getenv('BACKEND_URL', 'http://localhost:8000'))
+        except Exception:
+            pass
+        return os.getenv('BACKEND_URL', 'http://localhost:8000')
+
     def filtrar_produtos(self, e):
         try:
             busca = self.busca_field.value.lower() if self.busca_field.value else ""
             
-            # Se a busca estiver vazia, recarregar todos os produtos
-            if not busca:
-                self.carregar_produtos()
-                return
-            
-            produtos = self.db.fetchall("""
-                SELECT 
-                    id, 
-                    codigo, 
-                    nome, 
-                    descricao,
-                    preco_venda,
-                    estoque,
-                    venda_por_peso,
-                    unidade_medida
-                FROM produtos 
-                WHERE ativo = 1 
-                AND estoque > 0
-                AND (
-                    LOWER(codigo) LIKE ? 
-                    OR LOWER(nome) LIKE ? 
-                    OR LOWER(descricao) LIKE ?
+            # Fonte de produtos: cache (web) ou banco local
+            if self._is_web():
+                produtos = [p for p in self._produtos_cache if (
+                    (p.get('estoque', 0) or 0) > 0 and (
+                        (p.get('codigo') or '').lower().find(busca) >= 0 or
+                        (p.get('nome') or '').lower().find(busca) >= 0 or
+                        (p.get('descricao') or '').lower().find(busca) >= 0
+                    )
+                )] if busca else self._produtos_cache
+            else:
+                # Se a busca estiver vazia, recarregar todos os produtos
+                if not busca:
+                    self.carregar_produtos()
+                    return
+                produtos = self.db.fetchall(
+                    """
+                    SELECT 
+                        id, 
+                        codigo, 
+                        nome, 
+                        descricao,
+                        preco_venda,
+                        estoque,
+                        venda_por_peso,
+                        unidade_medida
+                    FROM produtos 
+                    WHERE ativo = 1 
+                    AND estoque > 0
+                    AND (
+                        LOWER(codigo) LIKE ? 
+                        OR LOWER(nome) LIKE ? 
+                        OR LOWER(descricao) LIKE ?
+                    )
+                    ORDER BY nome
+                    """,
+                    (f"%{busca}%", f"%{busca}%", f"%{busca}%")
                 )
-                ORDER BY nome
-            """, (f"%{busca}%", f"%{busca}%", f"%{busca}%"))
             
             self.produtos_table.rows.clear()
             
             for produto in produtos:
                 # Ajustar exibição do preço e estoque baseado no tipo de venda
-                if produto['venda_por_peso'] == 1:
-                    preco_display = f"MT {produto['preco_venda']:.2f}/KG"
-                    estoque_display = f"{produto['estoque']:.3f} KG"
+                venda_por_peso_val = produto['venda_por_peso'] if isinstance(produto, dict) else produto['venda_por_peso']
+                preco_base = produto['preco_venda'] if isinstance(produto, dict) else produto['preco_venda']
+                estoque_base = produto['estoque'] if isinstance(produto, dict) else produto['estoque']
+                if int(venda_por_peso_val) == 1:
+                    preco_display = f"MT {float(preco_base):.2f}/KG"
+                    estoque_display = f"{float(estoque_base):.3f} KG"
                 else:
-                    preco_display = f"MT {produto['preco_venda']:.2f}"
-                    estoque_display = str(produto['estoque'])
+                    preco_display = f"MT {float(preco_base):.2f}"
+                    estoque_display = str(estoque_base)
                 
                 self.produtos_table.rows.append(
                     ft.DataRow(
                         cells=[
-                            ft.DataCell(ft.Text(produto['codigo'], color=ft.colors.BLACK)),
+                            ft.DataCell(ft.Text((produto['codigo'] if isinstance(produto, dict) else produto['codigo']), color=ft.colors.BLACK)),
                             ft.DataCell(
                                 ft.TextButton(
-                                    text=produto['nome'],
+                                    text=(produto['nome'] if isinstance(produto, dict) else produto['nome']),
                                     style=ft.ButtonStyle(color=ft.colors.BLACK),
-                                    data=dict(produto),
+                                    data=(produto if isinstance(produto, dict) else dict(produto)),
                                     on_click=self.mostrar_detalhes_produto
                                 )
                             ),
-                            ft.DataCell(ft.Text(produto['descricao'] or '', color=ft.colors.BLACK)),
+                            ft.DataCell(ft.Text((produto.get('descricao') if isinstance(produto, dict) else (produto['descricao'] or '')), color=ft.colors.BLACK)),
                             ft.DataCell(ft.Text(preco_display, color=ft.colors.BLACK)),
                             ft.DataCell(ft.Text(estoque_display, color=ft.colors.BLACK)),
                             ft.DataCell(
@@ -434,14 +470,14 @@ class PDVView(ft.UserControl):
                                         icon=ft.icons.ADD_SHOPPING_CART,
                                         icon_color=ft.colors.BLUE,
                                         tooltip="Adicionar ao Carrinho",
-                                        data=dict(produto),
+                                        data=(produto if isinstance(produto, dict) else dict(produto)),
                                         on_click=self.adicionar_ao_carrinho
                                     ),
                                     ft.IconButton(
                                         icon=ft.icons.INFO_OUTLINE,
                                         icon_color=ft.colors.BLUE_900,
                                         tooltip="Ver detalhes",
-                                        data=dict(produto),
+                                        data=(produto if isinstance(produto, dict) else dict(produto)),
                                         on_click=self.mostrar_detalhes_produto
                                     )
                                 ])
@@ -459,46 +495,79 @@ class PDVView(ft.UserControl):
     def carregar_produtos(self):
         """Carrega a lista de produtos"""
         try:
-            # Verificar se a tabela produtos existe
-            tabela_existe = self.db.fetchone("""SELECT name FROM sqlite_master WHERE type='table' AND name='produtos'""")
-            if not tabela_existe:
-                print("Tabela de produtos não existe!")
-                self.mostrar_erro("Erro: Tabela de produtos não encontrada!")
-                return
+            if self._is_web():
+                # Buscar produtos do backend e preencher cache
+                base = self._get_backend_url().rstrip('/') + "/api"
+                produtos = []
+                try:
+                    with httpx.Client(timeout=10.0) as client:
+                        resp = client.get(f"{base}/produtos/")
+                        if resp.status_code == 200:
+                            dados = resp.json() or []
+                            for p in dados:
+                                try:
+                                    produtos.append({
+                                        'id': p.get('id'),
+                                        'codigo': p.get('codigo') or '',
+                                        'nome': p.get('nome') or '',
+                                        'descricao': p.get('descricao') or '',
+                                        'preco_venda': float(p.get('preco_venda') or 0),
+                                        'estoque': float(p.get('estoque') or 0),
+                                        'venda_por_peso': 1 if p.get('venda_por_peso') in (1, True, '1', 'true', 'True') else 0,
+                                        'unidade_medida': p.get('unidade_medida') or 'un'
+                                    })
+                                except Exception:
+                                    pass
+                        else:
+                            print(f"[WEB] Falha ao buscar produtos: {resp.status_code}")
+                except Exception as ex:
+                    print(f"[WEB] Erro ao buscar produtos: {ex}")
+
+                # Armazena no cache e continua fluxo de UI
+                self._produtos_cache = [p for p in produtos if p.get('estoque', 0) > 0]
+            else:
+                # Verificar se a tabela produtos existe
+                tabela_existe = self.db.fetchone("""SELECT name FROM sqlite_master WHERE type='table' AND name='produtos'""")
+                if not tabela_existe:
+                    print("Tabela de produtos não existe!")
+                    self.mostrar_erro("Erro: Tabela de produtos não encontrada!")
+                    return
                 
-            # Verificar estrutura da tabela
-            try:
-                colunas = self.db.fetchall("PRAGMA table_info(produtos)")
-                colunas_nomes = [coluna['name'] for coluna in colunas]
-                colunas_necessarias = ['id', 'codigo', 'nome', 'descricao', 'preco_venda', 'estoque', 'venda_por_peso', 'unidade_medida']
-                for coluna in colunas_necessarias:
-                    if coluna not in colunas_nomes:
-                        print(f"Coluna {coluna} não encontrada na tabela produtos")
-                        self.mostrar_erro(f"Erro: Coluna {coluna} não encontrada na tabela produtos")
-                        return
-            except Exception as e:
-                print(f"Erro ao verificar estrutura da tabela: {e}")
-            
-            # Consulta com tratamento de tipo de dados e join com categorias/fornecedores
-            produtos = self.db.fetchall("""
-                SELECT 
-                    p.id, 
-                    p.codigo, 
-                    p.nome, 
-                    p.descricao,
-                    CAST(p.preco_venda AS REAL) as preco_venda,
-                    CAST(p.estoque AS REAL) as estoque,
-                    CAST(p.venda_por_peso AS INTEGER) as venda_por_peso,
-                    p.unidade_medida,
-                    c.nome as categoria_nome,
-                    f.nome as fornecedor_nome
-                FROM produtos p
-                LEFT JOIN categorias c ON p.categoria_id = c.id
-                LEFT JOIN fornecedores f ON p.fornecedor_id = f.id
-                WHERE p.ativo = 1 
-                AND CAST(p.estoque AS REAL) > 0
-                ORDER BY p.nome
-            """)
+                # Verificar estrutura da tabela
+                try:
+                    colunas = self.db.fetchall("PRAGMA table_info(produtos)")
+                    colunas_nomes = [coluna['name'] for coluna in colunas]
+                    colunas_necessarias = ['id', 'codigo', 'nome', 'descricao', 'preco_venda', 'estoque', 'venda_por_peso', 'unidade_medida']
+                    for coluna in colunas_necessarias:
+                        if coluna not in colunas_nomes:
+                            print(f"Coluna {coluna} não encontrada na tabela produtos")
+                            self.mostrar_erro(f"Erro: Coluna {coluna} não encontrada na tabela produtos")
+                            return
+                except Exception as e:
+                    print(f"Erro ao verificar estrutura da tabela: {e}")
+                
+                # Consulta com tratamento de tipo de dados e join com categorias/fornecedores
+                produtos = self.db.fetchall(
+                    """
+                    SELECT 
+                        p.id, 
+                        p.codigo, 
+                        p.nome, 
+                        p.descricao,
+                        CAST(p.preco_venda AS REAL) as preco_venda,
+                        CAST(p.estoque AS REAL) as estoque,
+                        CAST(p.venda_por_peso AS INTEGER) as venda_por_peso,
+                        p.unidade_medida,
+                        c.nome as categoria_nome,
+                        f.nome as fornecedor_nome
+                    FROM produtos p
+                    LEFT JOIN categorias c ON p.categoria_id = c.id
+                    LEFT JOIN fornecedores f ON p.fornecedor_id = f.id
+                    WHERE p.ativo = 1 
+                    AND CAST(p.estoque AS REAL) > 0
+                    ORDER BY p.nome
+                    """
+                )
             
             self.produtos_table.rows.clear()
             
@@ -506,12 +575,12 @@ class PDVView(ft.UserControl):
                 print("Nenhum produto encontrado ou erro na consulta")
                 return
                 
-            for produto in produtos:
+            for produto in (self._produtos_cache if self._is_web() else produtos):
                 try:
                     # Ajustar exibição do preço e estoque baseado no tipo de venda
-                    venda_por_peso = int(produto['venda_por_peso']) if produto['venda_por_peso'] is not None else 0
-                    preco_venda = float(produto['preco_venda']) if produto['preco_venda'] is not None else 0.0
-                    estoque = float(produto['estoque']) if produto['estoque'] is not None else 0.0
+                    venda_por_peso = int((produto['venda_por_peso'] if isinstance(produto, dict) else produto['venda_por_peso']) or 0)
+                    preco_venda = float((produto['preco_venda'] if isinstance(produto, dict) else produto['preco_venda']) or 0)
+                    estoque = float((produto['estoque'] if isinstance(produto, dict) else produto['estoque']) or 0)
                     
                     if venda_por_peso == 1:
                         preco_display = f"MT {preco_venda:.2f}/KG"
@@ -523,16 +592,16 @@ class PDVView(ft.UserControl):
                     self.produtos_table.rows.append(
                         ft.DataRow(
                             cells=[
-                                ft.DataCell(ft.Text(produto['codigo'], color=ft.colors.BLACK)),
+                                ft.DataCell(ft.Text((produto['codigo'] if isinstance(produto, dict) else produto['codigo']), color=ft.colors.BLACK)),
                                 ft.DataCell(
                                     ft.TextButton(
-                                        text=produto['nome'],
+                                        text=(produto['nome'] if isinstance(produto, dict) else produto['nome']),
                                         style=ft.ButtonStyle(color=ft.colors.BLACK),
-                                        data=dict(produto),
+                                        data=(produto if isinstance(produto, dict) else dict(produto)),
                                         on_click=self.mostrar_detalhes_produto
                                     )
                                 ),
-                                ft.DataCell(ft.Text(produto['descricao'] or '', color=ft.colors.BLACK)),
+                                ft.DataCell(ft.Text((produto.get('descricao') if isinstance(produto, dict) else (produto['descricao'] or '')), color=ft.colors.BLACK)),
                                 ft.DataCell(ft.Text(preco_display, color=ft.colors.BLACK)),
                                 ft.DataCell(ft.Text(estoque_display, color=ft.colors.BLACK)),
                                 ft.DataCell(
@@ -540,15 +609,15 @@ class PDVView(ft.UserControl):
                                         ft.IconButton(
                                             icon=ft.icons.ADD_SHOPPING_CART,
                                             icon_color=ft.colors.BLUE,
-                                            tooltip="Adicionar ao carrinho",
-                                            data=dict(produto),
+                                            tooltip="Adicionar ao Carrinho",
+                                            data=(produto if isinstance(produto, dict) else dict(produto)),
                                             on_click=self.adicionar_ao_carrinho
                                         ),
                                         ft.IconButton(
                                             icon=ft.icons.INFO_OUTLINE,
                                             icon_color=ft.colors.BLUE_900,
                                             tooltip="Ver detalhes",
-                                            data=dict(produto),
+                                            data=(produto if isinstance(produto, dict) else dict(produto)),
                                             on_click=self.mostrar_detalhes_produto
                                         )
                                     ])
