@@ -363,6 +363,73 @@ class DashboardView(ft.UserControl, TranslationMixin):
             self.page.snack_bar.open = True
             self.page.update()
 
+    def _is_web(self) -> bool:
+        """Detecta se está rodando no navegador (web)."""
+        try:
+            if os.getenv('WEB_MODE', '').lower() == 'true':
+                return True
+            return str(getattr(self.page, 'platform', '')).lower() in ("ios", "android", "web")
+        except Exception:
+            return False
+
+    def _get_backend_url(self) -> str:
+        """Obtém a URL do backend do arquivo de configuração ou variáveis de ambiente."""
+        try:
+            import json
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    conf = json.load(f)
+                    return conf.get('server_url', os.getenv('BACKEND_URL', 'http://localhost:8000'))
+        except Exception:
+            pass
+        return os.getenv('BACKEND_URL', 'http://localhost:8000')
+
+    async def _fetch_web_dashboard_numbers(self):
+        """Busca números de vendas no backend quando em web e atualiza os cards."""
+        base = self._get_backend_url().rstrip('/')
+        api_base = base + "/api"
+        try:
+            hoje = datetime.now().date().isoformat()
+            ano_mes = datetime.now().strftime('%Y-%m')
+
+            vendas_dia = 0.0
+            vendas_mes = 0.0
+            lucro_dia = 0.0
+            lucro_mes = 0.0
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{api_base}/vendas/")
+                if resp.status_code == 200:
+                    vendas = resp.json() or []
+                    for v in vendas:
+                        status = (v.get('status') or '').lower()
+                        if status == 'anulada':
+                            continue
+                        total = float(v.get('total') or 0)
+                        data_venda = v.get('data_venda') or ''
+                        if data_venda.startswith(hoje):
+                            vendas_dia += total
+                        if data_venda.startswith(ano_mes):
+                            vendas_mes += total
+
+            # Atualizar textos
+            self.vendas_dia.value = f"MT {vendas_dia:.2f}"
+            self.vendas_mes.value = f"MT {vendas_mes:.2f}"
+            if self.usuario.get('is_admin'):
+                self.lucro_dia.value = f"MT {lucro_dia:.2f}"
+                self.lucro_mes.value = f"MT {lucro_mes:.2f}"
+            # Atualizar UI
+            try:
+                self.update()
+                if hasattr(self, 'page') and self.page:
+                    self.page.update()
+            except Exception:
+                pass
+
+        except Exception as e:
+            print(f"Erro ao buscar números do dashboard (web): {e}")
+
     def build(self):
         # Cabeçalho com botão sair
         header = ft.Container(
@@ -2002,6 +2069,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
             
             # Iniciar monitoramento de conexão
             self.status_indicator.start_monitoring()
+
+            # Se estiver em modo web, buscar números do backend para os cards
+            try:
+                if self._is_web():
+                    asyncio.create_task(self._fetch_web_dashboard_numbers())
+            except Exception as _:
+                pass
             
         except Exception as e:
             print(f"Erro no did_mount: {e}")
