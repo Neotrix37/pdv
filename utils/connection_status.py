@@ -26,10 +26,22 @@ class ConnectionStatus:
         """Verifica se o backend está online fazendo uma requisição ao endpoint /healthz."""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{self.server_url}/healthz")
+                # Tentar primeiro o endpoint /healthz direto
+                try:
+                    response = await client.get(f"{self.server_url}/healthz")
+                    if response.status_code == 200:
+                        self.is_online = True
+                        return True
+                except:
+                    pass
+                
+                # Se falhar, tentar sem /api no final (caso server_url já inclua /api)
+                base_url = self.server_url.replace('/api', '') if self.server_url.endswith('/api') else self.server_url
+                response = await client.get(f"{base_url}/healthz")
                 self.is_online = response.status_code == 200
                 return self.is_online
-        except Exception:
+        except Exception as e:
+            print(f"Erro na verificação de conexão: {e}")
             self.is_online = False
             return False
     
