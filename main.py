@@ -95,13 +95,25 @@ def main(page: ft.Page):
         page.go("/dashboard")
     
     def on_login_success(user):
-        # Armazenar dados do usuário na sessão
+        # Armazenar dados do usuário na sessão e em page.data
+        try:
+            page.session.set("usuario", user)
+        except Exception:
+            pass
         page.data = user
         # Redirecionar para o dashboard
         page.go("/dashboard")
     
     def route_change(route):
         page.views.clear()
+        # Restaurar usuário da sessão se page.data estiver vazio (especialmente no modo web)
+        try:
+            if (not page.data) and page.session.contains_key("usuario"):
+                sess_user = page.session.get("usuario")
+                if sess_user:
+                    page.data = sess_user
+        except Exception:
+            pass
         
         if page.route in ["/", "/login"]:
             # Para rota de login, limpar estado da página
@@ -258,6 +270,7 @@ def main(page: ft.Page):
                     )
                 )
         elif page.route == "/minhas-vendas":
+            print("Acessando rota /minhas-vendas")
             page.views.append(
                 ft.View(
                     route="/minhas-vendas",
@@ -266,6 +279,7 @@ def main(page: ft.Page):
                 )
             )
         elif page.route == "/todas-vendas":
+            print("Acessando rota /todas-vendas")
             if not page.data.get('is_admin'):
                 page.go("/dashboard")
             else:

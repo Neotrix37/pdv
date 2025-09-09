@@ -40,14 +40,18 @@ def LoginView(page: ft.Page, on_login_success):
     error_text = ft.Text("", color=ft.colors.RED, size=12)
     
     def do_login(e):
-        if not username.value or not password.value:
+        # Remover espaços acidentais
+        user_inp = (username.value or "").strip()
+        pass_inp = (password.value or "").strip()
+
+        if not user_inp or not pass_inp:
             error_text.value = "Por favor, preencha todos os campos"
             page.update()
             return
             
         # Autenticar usuário
         db = Database()
-        user = db.verificar_login(username.value, password.value)
+        user = db.verificar_login(user_inp, pass_inp)
         
         if user:
             error_text.value = ""

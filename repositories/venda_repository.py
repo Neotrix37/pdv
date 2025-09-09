@@ -12,6 +12,8 @@ from utils.migration_helper import MigrationHelper
 class VendaRepository:
     def __init__(self, backend_url: str = None):
         self.backend_url = backend_url or self._get_backend_url()
+        # Base normalizada da API: garante exatamente um sufixo /api
+        self.api_base = self._make_api_base(self.backend_url)
         self.db_path = self._get_database_path()
         self._ensure_migration()
         self._ensure_change_log_table()
@@ -27,10 +29,24 @@ class VendaRepository:
         except Exception:
             pass
         return os.getenv("BACKEND_URL", "http://localhost:8000")
+
+    def _make_api_base(self, base_url: str) -> str:
+        """Normaliza a base da API para conter exatamente um /api no final."""
+        if base_url.endswith('/api'):
+            return base_url
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
+        return base_url + '/api'
     
     def _get_database_path(self) -> Path:
         """Obtém o caminho do banco de dados baseado no sistema operacional."""
-        return Path(__file__).parent.parent / 'database' / 'sistema.db'
+        # Usar o caminho central do app para evitar divergências
+        try:
+            from database.database import Database
+            db = Database()
+            return Path(db.db_path)
+        except Exception:
+            return Path(__file__).parent.parent / 'database' / 'sistema.db'
     
     def _is_online(self) -> bool:
         """Verifica se o backend está online (versão síncrona)."""
@@ -46,16 +62,30 @@ class VendaRepository:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-                    response = await client.get(f"{self.backend_url}/healthz")
-                    if response.status_code == 200:
-                        return True
+                    # Tenta healthz na base informada
+                    try:
+                        r1 = await client.get(f"{self.backend_url}/healthz")
+                        if r1.status_code == 200:
+                            return True
+                    except Exception:
+                        pass
+
+                    # Fallback sem /api quando aplicável
+                    if self.backend_url.endswith('/api'):
+                        base_url = self.backend_url[:-4]
+                        try:
+                            r2 = await client.get(f"{base_url}/healthz")
+                            if r2.status_code == 200:
+                                return True
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            
+
             if attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(1)
-        
+
         return False
     
     def _ensure_migration(self):
@@ -72,7 +102,7 @@ class VendaRepository:
         """Obtém todas as vendas (híbrido: servidor primeiro, fallback local)."""
         if self._is_online():
             try:
-                response = httpx.get(f"{self.backend_url}/api/vendas/", timeout=5.0)
+                response = httpx.get(f"{self.api_base}/vendas/", timeout=5.0)
                 if response.status_code == 200:
                     return response.json()
             except Exception as e:
@@ -104,7 +134,7 @@ class VendaRepository:
                 venda_local = self._get_local_venda_by_id(venda_id)
                 if venda_local and venda_local.get('uuid'):
                     response = httpx.get(
-                        f"{self.backend_url}/api/vendas/{venda_local['uuid']}", 
+                        f"{self.api_base}/vendas/{venda_local['uuid']}", 
                         timeout=5.0
                     )
                     if response.status_code == 200:
@@ -141,7 +171,7 @@ class VendaRepository:
         if self._is_online():
             try:
                 response = httpx.post(
-                    f"{self.backend_url}/api/vendas/",
+                    f"{self.api_base}/vendas/",
                     json=venda_data,
                     timeout=5.0
                 )
@@ -213,7 +243,7 @@ class VendaRepository:
         if self._is_online():
             try:
                 response = httpx.put(
-                    f"{self.backend_url}/api/vendas/{venda_uuid}",
+                    f"{self.api_base}/vendas/{venda_uuid}",
                     json=venda_data,
                     timeout=5.0
                 )
@@ -282,7 +312,7 @@ class VendaRepository:
         if self._is_online():
             try:
                 response = httpx.delete(
-                    f"{self.backend_url}/api/vendas/{venda_uuid}",
+                    f"{self.api_base}/vendas/{venda_uuid}",
                     timeout=5.0
                 )
                 if response.status_code == 200:
@@ -367,11 +397,26 @@ class VendaRepository:
             }
         
         try:
-            # FASE 1: Pull - buscar vendas do servidor
-            vendas_recebidas = await self._pull_vendas_do_servidor()
-            
-            # FASE 2: Push - enviar vendas antigas não sincronizadas
-            vendas_antigas_enviadas = await self._sincronizar_vendas_antigas()
+            # Heurística PUSH-first: se há vendas locais pendentes, empurra primeiro
+            pendentes = 0
+            try:
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT COUNT(*) FROM vendas 
+                        WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND TRIM(uuid) <> ''
+                          AND status != 'Anulada'
+                    """)
+                    pendentes = cur.fetchone()[0]
+            except Exception:
+                pendentes = 0
+
+            if pendentes > 0:
+                vendas_antigas_enviadas = await self._sincronizar_vendas_antigas()
+                vendas_recebidas = await self._pull_vendas_do_servidor()
+            else:
+                vendas_recebidas = await self._pull_vendas_do_servidor()
+                vendas_antigas_enviadas = await self._sincronizar_vendas_antigas()
             
             # FASE 3: Push - enviar mudanças pendentes
             mudancas = await self._obter_mudancas_pendentes()
@@ -382,6 +427,50 @@ class VendaRepository:
             
             if len(mudancas) == 0:
                 print("Nenhuma sincronizacao necessaria para vendas")
+            else:
+                async with httpx.AsyncClient() as client:
+                    for ch in mudancas:
+                        try:
+                            op = ch['operation']
+                            data = json.loads(ch['data_json']) if ch.get('data_json') else {}
+                            entity_uuid = ch['entity_id']
+                            if op == 'CREATE':
+                                resp = await client.post(f"{self.api_base}/vendas/", json=data, timeout=10.0)
+                                print(f"[VENDAS][CREATE] status: {resp.status_code}")
+                                if resp.status_code in (200, 201):
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                elif resp.status_code in (400, 409) or (resp.status_code == 500 and 'duplicate' in (resp.text or '').lower()):
+                                    # Já existe no servidor
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                else:
+                                    print(f"[VENDAS][CREATE] erro: {resp.text}")
+                            elif op == 'UPDATE':
+                                resp = await client.put(f"{self.api_base}/vendas/{entity_uuid}", json=data, timeout=10.0)
+                                print(f"[VENDAS][UPDATE] status: {resp.status_code}")
+                                if resp.status_code == 200:
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                elif resp.status_code == 404:
+                                    # Se não existe no servidor, tentar criar
+                                    post = await client.post(f"{self.api_base}/vendas/", json=data, timeout=10.0)
+                                    print(f"[VENDAS][UPDATE->CREATE] status: {post.status_code}")
+                                    if post.status_code in (200, 201, 409):
+                                        self._mark_change_synced(ch['id'])
+                                        mudancas_enviadas += 1
+                                else:
+                                    print(f"[VENDAS][UPDATE] erro: {resp.text}")
+                            elif op == 'DELETE':
+                                resp = await client.delete(f"{self.api_base}/vendas/{entity_uuid}", timeout=10.0)
+                                print(f"[VENDAS][DELETE] status: {resp.status_code}")
+                                if resp.status_code in (200, 204):
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                            else:
+                                print(f"[VENDAS] Operacao nao suportada: {op}")
+                        except Exception as e:
+                            print(f"[VENDAS] Erro ao processar mudança pendente {ch.get('id')}: {e}")
             
             return {
                 "status": "success",
@@ -404,7 +493,8 @@ class VendaRepository:
     async def _pull_vendas_do_servidor(self) -> int:
         """Busca vendas do servidor e atualiza localmente."""
         print("FASE 1: Buscando vendas do servidor...")
-        return 0  # Por enquanto, não implementado
+        # TODO: Implementar pull de vendas do servidor se necessário
+        return 0
     
     async def _sincronizar_vendas_antigas(self) -> int:
         """Sincroniza vendas antigas não sincronizadas com o servidor."""
@@ -472,29 +562,28 @@ class VendaRepository:
                                 # Verificar se produto existe no servidor (por UUID ou código)
                                 produto_existe = False
                                 try:
-                                    # Tentar buscar por UUID primeiro
+                                    # Tentar por UUID
                                     produto_response = await client.get(
-                                        f"{self.backend_url}/api/produtos/{produto_uuid}",
+                                        f"{self.api_base}/produtos/{produto_uuid}",
                                         timeout=5.0
                                     )
                                     if produto_response.status_code == 200:
                                         produto_existe = True
                                     else:
-                                        # Se não encontrou por UUID, tentar buscar por código
+                                        # Buscar lista e conferir por código
                                         produtos_response = await client.get(
-                                            f"{self.backend_url}/api/produtos/",
+                                            f"{self.api_base}/produtos/",
                                             timeout=5.0
                                         )
                                         if produtos_response.status_code == 200:
-                                            produtos_servidor = produtos_response.json()
-                                            for p in produtos_servidor:
+                                            for p in produtos_response.json():
                                                 if p.get('codigo') == produto_codigo:
                                                     produto_existe = True
-                                                    produto_uuid = p.get('id', produto_uuid)  # Usar ID do servidor
+                                                    produto_uuid = p.get('id', produto_uuid)
                                                     break
                                 except Exception as e:
                                     print(f"Erro ao verificar produto no servidor: {e}")
-                                
+
                                 if not produto_existe:
                                     print(f"Produto {produto_codigo} (UUID: {produto_uuid}) não existe no servidor - pulando venda")
                                     venda_valida = False
@@ -504,12 +593,27 @@ class VendaRepository:
                                 venda_valida = False
                                 break
                             
-                            itens_data.append({
+                            # Backend espera quantidade inteira; se houver fração, envia em peso_kg
+                            qtd_raw = float(item[1])
+                            qtd_int = int(qtd_raw)
+                            peso_kg = 0.0
+                            if abs(qtd_raw - qtd_int) > 1e-6:
+                                peso_kg = round(qtd_raw - qtd_int, 3)
+
+                            # Backend exige quantidade > 0
+                            if qtd_int <= 0:
+                                qtd_int = 1
+
+                            item_payload = {
                                 "produto_id": str(produto_uuid),  # Garantir que é string
-                                "quantidade": float(item[1]),
+                                "quantidade": qtd_int,
                                 "preco_unitario": float(item[2]),
                                 "subtotal": float(item[3])
-                            })
+                            }
+                            if peso_kg > 0:
+                                item_payload["peso_kg"] = peso_kg
+
+                            itens_data.append(item_payload)
                         
                         if not venda_valida:
                             continue
@@ -528,7 +632,7 @@ class VendaRepository:
                         
                         # Tentar criar primeiro
                         response = await client.post(
-                            f"{self.backend_url}/api/vendas/",
+                            f"{self.api_base}/vendas/",
                             json=venda_data,
                             timeout=10.0
                         )
@@ -549,7 +653,7 @@ class VendaRepository:
                             print(f"Venda {venda[0]} ja existe, tentando atualizar...")
                             
                             response = await client.put(
-                                f"{self.backend_url}/api/vendas/{venda[6]}",
+                                f"{self.api_base}/vendas/{venda[6]}",
                                 json=venda_data,
                                 timeout=10.0
                             )

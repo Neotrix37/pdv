@@ -8,6 +8,8 @@ from repositories.sync_manager import SyncManager
 from utils.status_indicator import StatusIndicator
 import asyncio
 from typing import List, Dict, Any
+import os
+import httpx
 
 class DashboardView(ft.UserControl, TranslationMixin):
     def __init__(self, page: ft.Page, usuario):

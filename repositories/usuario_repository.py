@@ -855,10 +855,16 @@ class UsuarioRepository:
                         "uuid": uuid_val,
                         "nome": nome,
                         "usuario": usuario_login,
-                        "senha": senha_hash,  # já hasheada
                         "is_admin": bool(is_admin),
                         "ativo": True
                     }
+                    # Campo 'senha' é obrigatório no backend.
+                    # Se não houver hash local, envia uma senha padrão para permitir criação no servidor.
+                    default_plain_password = "842384"
+                    if isinstance(senha_hash, str) and senha_hash.strip():
+                        data["senha"] = senha_hash
+                    else:
+                        data["senha"] = default_plain_password
 
                     print(f"Enviando usuario antigo: {nome} (usuario: {usuario_login})")
 
