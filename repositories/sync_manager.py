@@ -7,6 +7,7 @@ from repositories.usuario_repository import UsuarioRepository
 from repositories.cliente_repository import ClienteRepository
 from repositories.venda_repository import VendaRepository
 from database.backup_recovery import BackupRecoveryManager
+import json
 
 class SyncManager:
     """Gerenciador centralizado de sincronização para todas as entidades."""
@@ -18,10 +19,11 @@ class SyncManager:
         # Executar verificação automática de backup na inicialização
         self._auto_check_backup_recovery()
         
-        self.produto_repo = ProdutoRepository()
-        self.usuario_repo = UsuarioRepository()
-        self.cliente_repo = ClienteRepository()
-        self.venda_repo = VendaRepository()
+        self.backend_url = self._get_backend_url()
+        self.produto_repo = ProdutoRepository(backend_url=self.backend_url)
+        self.usuario_repo = UsuarioRepository(backend_url=self.backend_url)
+        self.cliente_repo = ClienteRepository(backend_url=self.backend_url)
+        self.venda_repo = VendaRepository(backend_url=self.backend_url)
         
         # Lista de repositórios para sincronização
         self.repositories = [
@@ -31,6 +33,18 @@ class SyncManager:
             ('vendas', self.venda_repo)
         ]
     
+    def _get_backend_url(self) -> str:
+        """Obtém a URL do backend do arquivo de configuração."""
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get('server_url', 'http://localhost:8000')
+        except Exception:
+            pass
+        return os.getenv("BACKEND_URL", "http://localhost:8000")
+
     def _auto_check_backup_recovery(self):
         """Verificação automática de recuperação de backup na inicialização."""
         try:

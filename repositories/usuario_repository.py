@@ -11,8 +11,8 @@ import platform
 from utils.migration_helper import MigrationHelper
 
 class UsuarioRepository:
-    def __init__(self):
-        self.backend_url = self._get_backend_url()
+    def __init__(self, backend_url: str = None):
+        self.backend_url = backend_url or self._get_backend_url()
         self.db_path = self._get_database_path()
         self._ensure_migration()
         self._ensure_change_log_table()
