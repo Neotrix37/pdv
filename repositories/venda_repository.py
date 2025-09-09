@@ -135,7 +135,7 @@ class VendaRepository:
                 if venda_local and venda_local.get('uuid'):
                     response = httpx.get(
                         f"{self.api_base}/vendas/{venda_local['uuid']}", 
-                        timeout=5.0
+                        timeout=30.0
                     )
                     if response.status_code == 200:
                         return response.json()
@@ -565,7 +565,7 @@ class VendaRepository:
                                     # Tentar por UUID
                                     produto_response = await client.get(
                                         f"{self.api_base}/produtos/{produto_uuid}",
-                                        timeout=5.0
+                                        timeout=30.0
                                     )
                                     if produto_response.status_code == 200:
                                         produto_existe = True
@@ -573,7 +573,7 @@ class VendaRepository:
                                         # Buscar lista e conferir por código
                                         produtos_response = await client.get(
                                             f"{self.api_base}/produtos/",
-                                            timeout=5.0
+                                            timeout=30.0
                                         )
                                         if produtos_response.status_code == 200:
                                             for p in produtos_response.json():
@@ -641,7 +641,7 @@ class VendaRepository:
                             # Marcar como sincronizado
                             cursor.execute("""
                                 UPDATE vendas 
-                                SET synced = 1, updated_at = CURRENT_TIMESTAMP
+                                SET synced = 1
                                 WHERE id = ?
                             """, (venda[0],))
                             conn.commit()
@@ -661,7 +661,7 @@ class VendaRepository:
                             if response.status_code == 200:
                                 cursor.execute("""
                                     UPDATE vendas 
-                                    SET synced = 1, updated_at = CURRENT_TIMESTAMP
+                                    SET synced = 1
                                     WHERE id = ?
                                 """, (venda[0],))
                                 conn.commit()
@@ -669,6 +669,16 @@ class VendaRepository:
                                 print(f"Venda {venda[0]} atualizada no servidor")
                             else:
                                 print(f"Erro ao atualizar venda: {response.text}")
+                        elif response.status_code == 500 and ("duplicate key" in response.text or "UniqueViolationError" in response.text):
+                            # Venda já existe (erro de chave duplicada)
+                            print(f"Venda {venda[0]} ja existe no servidor (chave duplicada) - marcando como sincronizada")
+                            cursor.execute("""
+                                UPDATE vendas 
+                                SET synced = 1
+                                WHERE id = ?
+                            """, (venda[0],))
+                            conn.commit()
+                            enviados += 1
                         else:
                             print(f"Erro ao enviar venda: {response.status_code} - {response.text}")
                             
@@ -693,7 +703,7 @@ class VendaRepository:
                             response = await client.post(
                                 f"{self.backend_url}/api/vendas/",
                                 json=data,
-                                timeout=5.0
+                                timeout=30.0
                             )
                             if response.status_code in [200, 201]:
                                 self._mark_change_synced(mudanca['id'])
@@ -707,7 +717,7 @@ class VendaRepository:
                             response = await client.put(
                                 f"{self.backend_url}/api/vendas/{mudanca['entity_id']}",
                                 json=data,
-                                timeout=5.0
+                                timeout=30.0
                             )
                             if response.status_code == 200:
                                 self._mark_change_synced(mudanca['id'])
@@ -719,7 +729,7 @@ class VendaRepository:
                         elif mudanca['operation'] == 'DELETE':
                             response = await client.delete(
                                 f"{self.backend_url}/api/vendas/{mudanca['entity_id']}",
-                                timeout=5.0
+                                timeout=30.0
                             )
                             if response.status_code == 200:
                                 self._mark_change_synced(mudanca['id'])
