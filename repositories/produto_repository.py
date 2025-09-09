@@ -17,6 +17,8 @@ import json
 class ProdutoRepository:
     def __init__(self, backend_url: str = None):
         self.backend_url = backend_url or self._get_backend_url()
+        # Base normalizada da API: garante exatamente um sufixo /api
+        self.api_base = self._make_api_base(self.backend_url)
         self.db_path = self._get_database_path()
         self._ensure_migration()
         
@@ -65,6 +67,11 @@ class ProdutoRepository:
                 migration_helper.migrate_produtos_table()
         except Exception as e:
             print(f"[PRODUTO_REPO] Erro durante migração: {e}")
+
+    def _make_api_base(self, backend_url: str) -> str:
+        """Normaliza a base da API, assegurando que termine com /api sem duplicar."""
+        base = (backend_url or '').rstrip('/')
+        return base if base.endswith('/api') else base + '/api'
     
     async def is_backend_online(self) -> bool:
         """Versão assíncrona para verificar se o backend está online."""
@@ -133,7 +140,7 @@ class ProdutoRepository:
         """Obtém todos os produtos. Tenta servidor primeiro, fallback para local."""
         if self._is_online():
             try:
-                response = httpx.get(f"{self.backend_url}/api/produtos/", timeout=5.0)
+                response = httpx.get(f"{self.api_base}/produtos/", timeout=5.0)
                 if response.status_code == 200:
                     return response.json()
             except Exception as e:
@@ -189,7 +196,7 @@ class ProdutoRepository:
         """Obtém produto por ID. Tenta servidor primeiro, fallback para local."""
         if self._is_online():
             try:
-                response = httpx.get(f"{self.backend_url}/api/produtos/{produto_id}", timeout=5.0)
+                response = httpx.get(f"{self.api_base}/produtos/{produto_id}", timeout=5.0)
                 if response.status_code == 200:
                     return response.json()
             except Exception as e:
@@ -202,7 +209,7 @@ class ProdutoRepository:
         """Obtém produto por UUID. Tenta servidor primeiro, fallback para local."""
         if self._is_online():
             try:
-                response = httpx.get(f"{self.backend_url}/api/produtos/{produto_uuid}", timeout=5.0)
+                response = httpx.get(f"{self.api_base}/produtos/{produto_uuid}", timeout=5.0)
                 if response.status_code == 200:
                     return response.json()
             except Exception as e:
@@ -305,7 +312,7 @@ class ProdutoRepository:
         if self._is_online():
             try:
                 response = httpx.post(
-                    f"{self.backend_url}/api/produtos", 
+                    f"{self.api_base}/produtos", 
                     json=produto_data,
                     timeout=5.0
                 )
@@ -377,7 +384,7 @@ class ProdutoRepository:
             try:
                 print(f"Tentando atualizar produto {produto_uuid} no servidor...")
                 response = httpx.put(
-                    f"{self.backend_url}/api/produtos/{produto_uuid}",
+                    f"{self.api_base}/produtos/{produto_uuid}",
                     json=produto_data,
                     timeout=5.0
                 )
@@ -450,7 +457,7 @@ class ProdutoRepository:
         if self._is_online():
             try:
                 response = httpx.delete(
-                    f"{self.backend_url}/api/produtos/{produto_uuid}",
+                    f"{self.api_base}/produtos/{produto_uuid}",
                     timeout=5.0
                 )
                 if response.status_code == 200:
@@ -577,7 +584,7 @@ class ProdutoRepository:
                         data = json.loads(mudanca['data_json'])
                         async with httpx.AsyncClient() as client:
                             response = await client.post(
-                                f"{self.backend_url}/api/produtos/",
+                                f"{self.api_base}/produtos/",
                                 json=data,
                                 timeout=5.0
                             )
@@ -593,7 +600,7 @@ class ProdutoRepository:
                         data = json.loads(mudanca['data_json'])
                         async with httpx.AsyncClient() as client:
                             response = await client.put(
-                                f"{self.backend_url}/api/produtos/{mudanca['entity_id']}",
+                                f"{self.api_base}/produtos/{mudanca['entity_id']}",
                                 json=data,
                                 timeout=5.0
                             )
@@ -608,7 +615,7 @@ class ProdutoRepository:
                                 
                                 # Buscar produtos por código para evitar duplicação
                                 list_response = await client.get(
-                                    f"{self.backend_url}/api/produtos/",
+                                    f"{self.api_base}/produtos/",
                                     timeout=5.0
                                 )
                                 
@@ -624,7 +631,7 @@ class ProdutoRepository:
                                     # Produto existe com mesmo código, fazer UPDATE no produto correto
                                     print(f"Encontrado produto com codigo {data.get('codigo')}, fazendo UPDATE...")
                                     update_response = await client.put(
-                                        f"{self.backend_url}/api/produtos/{produto_existente['id']}",
+                                        f"{self.api_base}/produtos/{produto_existente['id']}",
                                         json=data,
                                         timeout=5.0
                                     )
@@ -639,7 +646,7 @@ class ProdutoRepository:
                                     # Produto realmente não existe, criar novo
                                     print(f"Produto nao encontrado, tentando CREATE...")
                                     create_response = await client.post(
-                                        f"{self.backend_url}/api/produtos/",
+                                        f"{self.api_base}/produtos/",
                                         json=data,
                                         timeout=5.0
                                     )
@@ -656,7 +663,7 @@ class ProdutoRepository:
                     elif mudanca['operation'] == 'DELETE':
                         async with httpx.AsyncClient() as client:
                             response = await client.delete(
-                                f"{self.backend_url}/api/produtos/{mudanca['entity_id']}",
+                                f"{self.api_base}/produtos/{mudanca['entity_id']}",
                                 timeout=5.0
                             )
                             print(f"DELETE response: {response.status_code}")
@@ -693,7 +700,7 @@ class ProdutoRepository:
             async with httpx.AsyncClient() as client:
                 # Buscar todos os produtos do servidor
                 response = await client.get(
-                    f"{self.backend_url}/api/produtos/",
+                    f"{self.api_base}/produtos/",
                     timeout=10.0
                 )
                 
