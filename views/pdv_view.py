@@ -363,8 +363,12 @@ class PDVView(ft.UserControl):
         self.page.update()
         self.carregar_produtos()
         
-        # Configurar evento para salvar vendas antes de sair
-        self.page.on_window_event = self.handle_window_event
+        # Configurar evento para salvar vendas antes de sair (somente desktop)
+        try:
+            if not self._is_web():
+                self.page.on_window_event = self.handle_window_event
+        except Exception as e:
+            print(f"[PDV] Ignorando on_window_event no modo web: {e}")
 
     def handle_window_event(self, e):
         """Manipula eventos da janela"""
@@ -500,8 +504,14 @@ class PDVView(ft.UserControl):
                 base = self._get_backend_url().rstrip('/') + "/api"
                 produtos = []
                 try:
+                    url1 = f"{base}/produtos/"
+                    url2 = f"{base}/produtos"
+                    print(f"[WEB] Buscando produtos em: {url1}")
                     with httpx.Client(timeout=10.0) as client:
-                        resp = client.get(f"{base}/produtos/")
+                        resp = client.get(url1)
+                        if resp.status_code == 404:
+                            print(f"[WEB] 404 em {url1}, tentando {url2}")
+                            resp = client.get(url2)
                         if resp.status_code == 200:
                             dados = resp.json() or []
                             for p in dados:
@@ -519,7 +529,7 @@ class PDVView(ft.UserControl):
                                 except Exception:
                                     pass
                         else:
-                            print(f"[WEB] Falha ao buscar produtos: {resp.status_code}")
+                            print(f"[WEB] Falha ao buscar produtos ({resp.status_code}) em {url1} e {url2}")
                 except Exception as ex:
                     print(f"[WEB] Erro ao buscar produtos: {ex}")
 

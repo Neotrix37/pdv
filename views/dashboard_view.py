@@ -385,8 +385,8 @@ class DashboardView(ft.UserControl, TranslationMixin):
             pass
         return os.getenv('BACKEND_URL', 'http://localhost:8000')
 
-    async def _fetch_web_dashboard_numbers(self):
-        """Busca números de vendas no backend quando em web e atualiza os cards."""
+    def _fetch_web_dashboard_numbers_sync(self):
+        """Versão síncrona: busca números de vendas no backend e atualiza os cards (para web)."""
         base = self._get_backend_url().rstrip('/')
         api_base = base + "/api"
         try:
@@ -398,8 +398,15 @@ class DashboardView(ft.UserControl, TranslationMixin):
             lucro_dia = 0.0
             lucro_mes = 0.0
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{api_base}/vendas/")
+            # Tentar com e sem barra final
+            url1 = f"{api_base}/vendas/"
+            url2 = f"{api_base}/vendas"
+            print(f"[WEB] Dashboard buscando vendas em: {url1}")
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(url1)
+                if resp.status_code == 404:
+                    print(f"[WEB] 404 em {url1}, tentando {url2}")
+                    resp = client.get(url2)
                 if resp.status_code == 200:
                     vendas = resp.json() or []
                     for v in vendas:
@@ -412,6 +419,8 @@ class DashboardView(ft.UserControl, TranslationMixin):
                             vendas_dia += total
                         if data_venda.startswith(ano_mes):
                             vendas_mes += total
+                else:
+                    print(f"[WEB] Falha ao buscar vendas ({resp.status_code}) em {url1} e {url2}")
 
             # Atualizar textos
             self.vendas_dia.value = f"MT {vendas_dia:.2f}"
@@ -2070,10 +2079,11 @@ class DashboardView(ft.UserControl, TranslationMixin):
             # Iniciar monitoramento de conexão
             self.status_indicator.start_monitoring()
 
-            # Se estiver em modo web, buscar números do backend para os cards
+            # Se estiver em modo web, buscar números do backend para os cards (em thread)
             try:
                 if self._is_web():
-                    asyncio.create_task(self._fetch_web_dashboard_numbers())
+                    import threading
+                    threading.Thread(target=self._fetch_web_dashboard_numbers_sync, daemon=True).start()
             except Exception as _:
                 pass
             
