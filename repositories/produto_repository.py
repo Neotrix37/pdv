@@ -34,9 +34,26 @@ class ProdutoRepository:
     def _is_online(self) -> bool:
         """Verifica se o backend está online."""
         try:
-            response = httpx.get(f"{self.backend_url}/healthz", timeout=2.0)
-            return response.status_code == 200
-        except:
+            # Tenta primeiro exatamente a URL configurada
+            url1 = f"{self.backend_url}/healthz"
+            try:
+                resp1 = httpx.get(url1, timeout=2.0)
+                if resp1.status_code == 200:
+                    return True
+            except Exception:
+                pass
+
+            # Se falhar/404 e a URL terminar com /api, tenta sem /api
+            if self.backend_url.endswith('/api'):
+                base_url = self.backend_url[:-4]
+                url2 = f"{base_url}/healthz"
+                try:
+                    resp2 = httpx.get(url2, timeout=2.0)
+                    return resp2.status_code == 200
+                except Exception:
+                    pass
+            return False
+        except Exception:
             return False
     
     def _ensure_migration(self):
@@ -54,27 +71,44 @@ class ProdutoRepository:
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                print(f"Testando conexão com: {self.backend_url}/healthz (tentativa {attempt + 1})")
                 async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-                    response = await client.get(f"{self.backend_url}/healthz")
-                    print(f"Status da resposta: {response.status_code}")
-                    if response.status_code == 200:
-                        print(f"Backend online - {response.json().get('status', 'ok')}")
-                        return True
-                    else:
-                        print(f"Backend retornou status {response.status_code}")
+                    url1 = f"{self.backend_url}/healthz"
+                    print(f"Testando conexão com: {url1} (tentativa {attempt + 1})")
+                    try:
+                        response = await client.get(url1)
+                        print(f"Status da resposta: {response.status_code}")
+                        if response.status_code == 200:
+                            return True
+                        else:
+                            print("Backend retornou status", response.status_code)
+                    except Exception as e:
+                        print(f"Erro ao acessar {url1}: {e}")
+
+                    # Fallback sem /api quando aplicável
+                    if self.backend_url.endswith('/api'):
+                        base_url = self.backend_url[:-4]
+                        url2 = f"{base_url}/healthz"
+                        print(f"Tentando fallback em: {url2}")
+                        try:
+                            response2 = await client.get(url2)
+                            print(f"Status da resposta (fallback): {response2.status_code}")
+                            if response2.status_code == 200:
+                                return True
+                        except Exception as e2:
+                            print(f"Erro no fallback {url2}: {e2}")
+
             except httpx.TimeoutException as e:
                 print(f"Timeout na tentativa {attempt + 1}: {e}")
             except httpx.ConnectError as e:
                 print(f"Erro de conexao na tentativa {attempt + 1}: {e}")
             except Exception as e:
                 print(f"Erro inesperado na tentativa {attempt + 1}: {type(e).__name__}: {e}")
-            
+
             if attempt < max_retries - 1:
                 print("Tentando novamente em 1 segundo...")
                 import asyncio
                 await asyncio.sleep(1)
-        
+
         print("Backend offline apos todas as tentativas")
         return False
     
