@@ -13,6 +13,8 @@ from utils.migration_helper import MigrationHelper
 class UsuarioRepository:
     def __init__(self, backend_url: str = None):
         self.backend_url = backend_url or self._get_backend_url()
+        # Base normalizada da API: garante exatamente um sufixo /api
+        self.api_base = self._make_api_base(self.backend_url)
         self.db_path = self._get_database_path()
         self._ensure_migration()
         self._ensure_change_log_table()
@@ -28,11 +30,25 @@ class UsuarioRepository:
         except Exception:
             pass
         return os.getenv("BACKEND_URL", "http://localhost:8000")
+
+    def _make_api_base(self, base_url: str) -> str:
+        """Normaliza a base da API para conter exatamente um /api no final."""
+        if base_url.endswith('/api'):
+            return base_url
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
+        return base_url + '/api'
     
     def _get_database_path(self) -> Path:
         """Obtém o caminho do banco de dados baseado no sistema operacional."""
-        # Usar o mesmo caminho do sistema PDV3 existente
-        return Path(__file__).parent.parent / 'database' / 'sistema.db'
+        # Usar o mesmo caminho central do app (evita mismatch de DB)
+        try:
+            from database.database import Database
+            db = Database()
+            return Path(db.db_path)
+        except Exception:
+            # Fallback antigo
+            return Path(__file__).parent.parent / 'database' / 'sistema.db'
     
     def _is_online(self) -> bool:
         """Verifica se o backend está online (versão síncrona)."""
@@ -48,16 +64,31 @@ class UsuarioRepository:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-                    response = await client.get(f"{self.backend_url}/healthz")
-                    if response.status_code == 200:
-                        return True
+                    url1 = f"{self.backend_url}/healthz"
+                    try:
+                        resp1 = await client.get(url1)
+                        if resp1.status_code == 200:
+                            return True
+                    except Exception:
+                        pass
+
+                    # Fallback sem /api quando aplicável
+                    if self.backend_url.endswith('/api'):
+                        base_url = self.backend_url[:-4]
+                        url2 = f"{base_url}/healthz"
+                        try:
+                            resp2 = await client.get(url2)
+                            if resp2.status_code == 200:
+                                return True
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            
+
             if attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(1)
-        
+
         return False
     
     def _ensure_migration(self):
@@ -74,7 +105,7 @@ class UsuarioRepository:
         """Obtém todos os usuários (híbrido: servidor primeiro, fallback local)."""
         if self._is_online():
             try:
-                response = httpx.get(f"{self.backend_url}/api/usuarios/", timeout=5.0)
+                response = httpx.get(f"{self.api_base}/usuarios/", timeout=5.0)
                 if response.status_code == 200:
                     return response.json()
             except Exception as e:
@@ -132,7 +163,7 @@ class UsuarioRepository:
                 usuario_local = self._get_local_usuario_by_id(usuario_id)
                 if usuario_local and usuario_local.get('uuid'):
                     response = httpx.get(
-                        f"{self.backend_url}/api/usuarios/{usuario_local['uuid']}", 
+                        f"{self.api_base}/usuarios/{usuario_local['uuid']}", 
                         timeout=5.0
                     )
                     if response.status_code == 200:
@@ -228,7 +259,7 @@ class UsuarioRepository:
         if self._is_online():
             try:
                 response = httpx.post(
-                    f"{self.backend_url}/api/usuarios/",
+                    f"{self.api_base}/usuarios/",
                     json=usuario_data,
                     timeout=5.0
                 )
@@ -281,6 +312,25 @@ class UsuarioRepository:
             # Retornar usuário criado
             return self._get_local_usuario_by_id(usuario_id)
     
+    async def _obter_mudancas_pendentes(self) -> List[Dict[str, Any]]:
+        """Obtém mudanças pendentes de usuários."""
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT id, entity_type, entity_id, operation, data_json, created_at
+                    FROM change_log 
+                    WHERE entity_type = 'usuarios' AND status = 'pending'
+                    ORDER BY datetime(created_at) ASC
+                    """
+                )
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"[USUARIOS] Erro ao obter mudancas pendentes: {e}")
+            return []
+    
     def update(self, usuario_id: int, usuario_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Atualiza usuário (híbrido)."""
         # Obter UUID do usuário local
@@ -294,7 +344,7 @@ class UsuarioRepository:
         if self._is_online():
             try:
                 response = httpx.put(
-                    f"{self.backend_url}/api/usuarios/{usuario_uuid}",
+                    f"{self.api_base}/usuarios/{usuario_uuid}",
                     json=usuario_data,
                     timeout=5.0
                 )
@@ -356,7 +406,7 @@ class UsuarioRepository:
         if self._is_online():
             try:
                 response = httpx.delete(
-                    f"{self.backend_url}/api/usuarios/{usuario_uuid}",
+                    f"{self.api_base}/usuarios/{usuario_uuid}",
                     timeout=5.0
                 )
                 if response.status_code == 200:
@@ -439,24 +489,108 @@ class UsuarioRepository:
             }
         
         try:
-            # FASE 1: Pull - buscar usuários do servidor
-            usuarios_recebidos = await self._pull_usuarios_do_servidor()
-            
-            # FASE 2: Push - enviar usuários antigos não sincronizados
-            usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
+            # Heurística de primeira sincronização: se houver usuários locais pendentes, priorizar PUSH primeiro
+            usuarios_recebidos = 0
+            usuarios_antigos_enviados = 0
+            try:
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT COUNT(*) FROM usuarios 
+                        WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND TRIM(uuid) <> '' AND ativo = 1
+                    """)
+                    pendentes = cur.fetchone()[0]
+            except Exception:
+                pendentes = 0
+
+            if pendentes > 0:
+                # PUSH primeiro
+                usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
+                # Depois PULL para convergir
+                usuarios_recebidos = await self._pull_usuarios_do_servidor()
+            else:
+                # Ordem normal
+                usuarios_recebidos = await self._pull_usuarios_do_servidor()
+                usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
             
             # FASE 3: Push - enviar mudanças pendentes
             mudancas = await self._obter_mudancas_pendentes()
             mudancas_enviadas = 0
-            
+
             print(f"FASE 3: Enviando mudancas pendentes de usuarios...")
             print(f"Encontradas {len(mudancas)} mudancas pendentes de usuarios")
-            
+
             if len(mudancas) == 0:
                 print("Nenhuma sincronizacao necessaria para usuarios")
-            
-            # Aqui você implementaria o envio das mudanças pendentes
-            # Por enquanto, apenas reportamos
+            else:
+                async with httpx.AsyncClient() as client:
+                    for ch in mudancas:
+                        try:
+                            op = ch['operation']
+                            data = json.loads(ch['data_json']) if ch.get('data_json') else {}
+                            entity_uuid = ch['entity_id']
+                            if op == 'CREATE':
+                                resp = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=8.0)
+                                print(f"[USUARIOS][CREATE] status: {resp.status_code}")
+                                if resp.status_code in (200, 201):
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                elif resp.status_code == 409 or (resp.status_code == 500 and 'duplicate key value' in (resp.text or '').lower()):
+                                    # Já existe no servidor: marcar como sincronizada
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                    # Marcar local como sincronizado
+                                    try:
+                                        local = self.get_by_uuid(entity_uuid)
+                                        if local and 'id' in local:
+                                            with sqlite3.connect(str(self.db_path)) as conn:
+                                                cur2 = conn.cursor()
+                                                cur2.execute("UPDATE usuarios SET synced = 1, updated_at = ? WHERE id = ?", (datetime.now().isoformat(), local['id']))
+                                                conn.commit()
+                                    except Exception as mi:
+                                        print(f"[WARN] Falha ao marcar usuario local como sincronizado: {mi}")
+                                else:
+                                    print(f"[USUARIOS][CREATE] erro: {resp.text}")
+                            elif op == 'UPDATE':
+                                resp = await client.put(f"{self.api_base}/usuarios/{entity_uuid}", json=data, timeout=8.0)
+                                print(f"[USUARIOS][UPDATE] status: {resp.status_code}")
+                                if resp.status_code == 200:
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                elif resp.status_code == 404:
+                                    # Tentar CREATE se não existir no servidor
+                                    post = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=8.0)
+                                    print(f"[USUARIOS][UPDATE->CREATE] status: {post.status_code}")
+                                    if post.status_code in (200, 201):
+                                        self._mark_change_synced(ch['id'])
+                                        mudancas_enviadas += 1
+                                elif resp.status_code == 500 and 'keywords must be strings' in (resp.text or '').lower():
+                                    # Reenviar com payload mínimo válido
+                                    min_payload = {
+                                        'nome': data.get('nome'),
+                                        'usuario': data.get('usuario'),
+                                        'is_admin': bool(data.get('is_admin', False)),
+                                        'ativo': bool(data.get('ativo', True)),
+                                    }
+                                    if 'senha' in data and data.get('senha'):
+                                        min_payload['senha'] = data['senha']
+                                    retry = await client.put(f"{self.api_base}/usuarios/{entity_uuid}", json=min_payload, timeout=8.0)
+                                    print(f"[USUARIOS][UPDATE][RETRY-MIN] status: {retry.status_code}")
+                                    if retry.status_code == 200:
+                                        self._mark_change_synced(ch['id'])
+                                        mudancas_enviadas += 1
+                                else:
+                                    print(f"[USUARIOS][UPDATE] erro: {resp.text}")
+                            elif op == 'DELETE':
+                                resp = await client.delete(f"{self.api_base}/usuarios/{entity_uuid}", timeout=8.0)
+                                print(f"[USUARIOS][DELETE] status: {resp.status_code}")
+                                if resp.status_code in (200, 204):
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                            else:
+                                print(f"[USUARIOS] Operacao nao suportada: {op}")
+                        except Exception as e:
+                            print(f"[USUARIOS] Erro ao processar mudança pendente {ch.get('id')}: {e}")
             
             return {
                 "status": "success",
@@ -482,7 +616,7 @@ class UsuarioRepository:
             async with httpx.AsyncClient() as client:
                 # Buscar todos os usuários do servidor
                 response = await client.get(
-                    f"{self.backend_url}/api/usuarios/",
+                    f"{self.api_base}/usuarios/",
                     timeout=10.0
                 )
                 
@@ -593,8 +727,15 @@ class UsuarioRepository:
                 return False
             
             # Comparar datas
-            local_date = datetime.fromisoformat(usuario_local['updated_at'].replace('Z', '+00:00'))
-            server_date = datetime.fromisoformat(usuario_servidor['updated_at'].replace('Z', '+00:00'))
+            def _to_dt(val: str):
+                v = (val or '').replace('Z', '+00:00')
+                dt = datetime.fromisoformat(v)
+                # Normalizar para naive em UTC se tiver tzinfo
+                if dt.tzinfo is not None:
+                    return dt.astimezone(tz=None).replace(tzinfo=None)
+                return dt
+            local_date = _to_dt(usuario_local['updated_at'])
+            server_date = _to_dt(usuario_servidor['updated_at'])
             
             return server_date > local_date
         except Exception as e:
@@ -657,117 +798,106 @@ class UsuarioRepository:
             return False
     
     async def _sincronizar_usuarios_antigos(self) -> int:
-        """Sincroniza usuários antigos não sincronizados com o servidor."""
+        """Sincroniza usuários antigos não sincronizados com o servidor.
+        Se o servidor estiver vazio, envia TODOS os usuários locais com UUID (ativo=1),
+        independentemente do flag synced local."""
         print("FASE 2: Enviando usuarios antigos...")
         print("Verificando usuarios antigos nao sincronizados...")
-        
-        # Verificar se há usuários locais não sincronizados (incluindo bulk sync)
+
+        # 1) Detectar se o servidor está vazio
+        servidor_vazio = False
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{self.api_base}/usuarios/", timeout=8.0)
+                if resp.status_code == 200:
+                    usuarios_srv = resp.json()
+                    servidor_vazio = len(usuarios_srv) == 0
+        except Exception:
+            servidor_vazio = False
+
+        # 2) Selecionar usuários locais
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Primeiro verificar se há usuários nunca sincronizados (bulk sync)
-            cursor.execute("""
-                SELECT COUNT(*) FROM usuarios 
-                WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND uuid != '' AND ativo = 1
-            """)
-            usuarios_nao_sync_count = cursor.fetchone()[0]
-            
-            if usuarios_nao_sync_count > 0:
-                print(f"Verificando usuarios antigos nao sincronizados...")
-                cursor.execute("""
-                    SELECT id, nome, usuario, senha, is_admin, uuid, created_at, updated_at
-                    FROM usuarios 
-                    WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND uuid != '' AND ativo = 1
-                """)
+            if servidor_vazio:
+                print("Servidor vazio - sincronizando TODOS os usuarios locais...")
+                cursor.execute(
+                    """
+                    SELECT id, nome, usuario, senha, nivel, is_admin, ativo, salario,
+                           created_at, updated_at, uuid, COALESCE(synced,0) as synced
+                    FROM usuarios
+                    WHERE uuid IS NOT NULL AND TRIM(uuid) <> '' AND ativo = 1
+                    """
+                )
             else:
-                # Todos já sincronizados
-                cursor.execute("SELECT 1 WHERE 0")  # Query vazia
-            
-            usuarios_nao_sync = cursor.fetchall()
-            
-            if not usuarios_nao_sync:
-                print("Todos os usuarios ja estao sincronizados")
-                return 0
-            
-            print(f"Encontrados {len(usuarios_nao_sync)} usuarios nao sincronizados")
-            
-            enviados = 0
-            async with httpx.AsyncClient() as client:
-                for usuario in usuarios_nao_sync:
-                    try:
-                        usuario_data = {
-                            "uuid": usuario[5],
-                            "nome": usuario[1],
-                            "usuario": usuario[2],
-                            "senha": usuario[3],  # Já está hasheada
-                            "is_admin": bool(usuario[4]),
-                            "ativo": True
-                        }
-                        
-                        print(f"Enviando usuario antigo: {usuario[1]} (usuario: {usuario[2]})")
-                        
-                        # Tentar criar primeiro
-                        response = await client.post(
-                            f"{self.backend_url}/api/usuarios/",
-                            json=usuario_data,
-                            timeout=10.0
-                        )
-                        
-                        if response.status_code in [200, 201]:
-                            # Marcar como sincronizado
-                            cursor.execute("""
-                                UPDATE usuarios 
-                                SET synced = 1, updated_at = CURRENT_TIMESTAMP
-                                WHERE id = ?
-                            """, (usuario[0],))
+                cursor.execute(
+                    """
+                    SELECT id, nome, usuario, senha, nivel, is_admin, ativo, salario,
+                           created_at, updated_at, uuid, COALESCE(synced,0) as synced
+                    FROM usuarios
+                    WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND TRIM(uuid) <> ''
+                    """
+                )
+            usuarios_local = cursor.fetchall()
+        except Exception as e:
+            print(f"Erro ao consultar usuarios antigos: {e}")
+            return 0
+
+        print(f"Encontrados {len(usuarios_local)} usuarios para sincronizar")
+
+        # 3) Enviar para o servidor
+        enviados = 0
+        async with httpx.AsyncClient() as client:
+            for u in usuarios_local:
+                try:
+                    uid, nome, usuario_login, senha_hash, nivel, is_admin, ativo, salario, created_at, updated_at, uuid_val, synced_val = u
+                    data = {
+                        "uuid": uuid_val,
+                        "nome": nome,
+                        "usuario": usuario_login,
+                        "senha": senha_hash,  # já hasheada
+                        "is_admin": bool(is_admin),
+                        "ativo": True
+                    }
+
+                    print(f"Enviando usuario antigo: {nome} (usuario: {usuario_login})")
+
+                    # Tentar criar
+                    r = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=10.0)
+                    if r.status_code in (200, 201):
+                        cursor.execute("UPDATE usuarios SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (uid,))
+                        conn.commit()
+                        enviados += 1
+                        continue
+
+                    # Se já existe (409/400/500 duplicate), tentar atualizar
+                    if r.status_code in (400, 409) or (r.status_code == 500 and 'duplicate' in (r.text or '').lower()):
+                        pr = await client.put(f"{self.api_base}/usuarios/{uuid_val}", json=data, timeout=10.0)
+                        if pr.status_code == 200:
+                            cursor.execute("UPDATE usuarios SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (uid,))
                             conn.commit()
                             enviados += 1
-                            print(f"Usuario {usuario[1]} sincronizado")
-                            
-                        elif response.status_code == 400 or response.status_code == 500:
-                            # Usuário já existe, tentar atualizar
-                            print(f"Usuario {usuario[1]} ja existe, tentando atualizar...")
-                            
-                            response = await client.put(
-                                f"{self.backend_url}/api/usuarios/{usuario[5]}",
-                                json=usuario_data,
-                                timeout=10.0
-                            )
-                            
-                            if response.status_code == 200:
-                                cursor.execute("""
-                                    UPDATE usuarios 
-                                    SET synced = 1, updated_at = CURRENT_TIMESTAMP
-                                    WHERE id = ?
-                                """, (usuario[0],))
+                            continue
+                        # Se o servidor disser que não encontrou, criar novamente
+                        if pr.status_code == 404:
+                            cr = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=10.0)
+                            if cr.status_code in (200, 201, 409):
+                                cursor.execute("UPDATE usuarios SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (uid,))
                                 conn.commit()
                                 enviados += 1
-                                print(f"Usuario {usuario[1]} atualizado no servidor")
-                            else:
-                                # Se não conseguir atualizar, marcar como sincronizado mesmo assim
-                                # para evitar tentar novamente
-                                print(f"Usuario {usuario[1]} ja existe no servidor, marcando como sincronizado")
-                                cursor.execute("""
-                                    UPDATE usuarios 
-                                    SET synced = 1, updated_at = CURRENT_TIMESTAMP
-                                    WHERE id = ?
-                                """, (usuario[0],))
-                                conn.commit()
-                                enviados += 1
-                        else:
-                            print(f"Erro ao enviar usuario: {response.status_code} - {response.text}")
-                            
-                    except Exception as e:
-                        print(f"Erro ao processar usuario {usuario[1]}: {e}")
-            
+                                continue
+
+                    print(f"[WARN] Falha ao enviar usuario {nome}: {r.status_code} - {r.text}")
+                except Exception as e:
+                    print(f"Erro ao processar usuario {u[1]}: {e}")
+
+        try:
             conn.close()
-            print(f"Sincronizacao de usuarios antigos concluida: {enviados}/{len(usuarios_nao_sync)} enviados")
-            return enviados
-            
-        except Exception as e:
-            print(f"Erro na sincronizacao de usuarios antigos: {e}")
-            return 0
+        except Exception:
+            pass
+
+        print(f"Sincronizacao de usuarios antigos concluida: {enviados}/{len(usuarios_local)} enviados")
+        return enviados
     
     async def _obter_mudancas_pendentes(self) -> List[Dict[str, Any]]:
         """Obtém mudanças pendentes de usuários."""

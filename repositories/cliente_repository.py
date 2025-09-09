@@ -12,6 +12,8 @@ from utils.migration_helper import MigrationHelper
 class ClienteRepository:
     def __init__(self, backend_url: str = None):
         self.backend_url = backend_url or self._get_backend_url()
+        # Base normalizada da API: garante exatamente um sufixo /api
+        self.api_base = self._make_api_base(self.backend_url)
         self.db_path = self._get_database_path()
         self._ensure_migration()
         self._ensure_change_log_table()
@@ -27,6 +29,14 @@ class ClienteRepository:
         except Exception:
             pass
         return os.getenv("BACKEND_URL", "http://localhost:8000")
+
+    def _make_api_base(self, base_url: str) -> str:
+        """Normaliza a base da API para conter exatamente um /api no final."""
+        if base_url.endswith('/api'):
+            return base_url
+        if base_url.endswith('/'):
+            base_url = base_url[:-1]
+        return base_url + '/api'
     
     def _get_database_path(self) -> Path:
         """Obtém o caminho do banco de dados baseado no sistema operacional."""
@@ -46,16 +56,31 @@ class ClienteRepository:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
-                    response = await client.get(f"{self.backend_url}/healthz")
-                    if response.status_code == 200:
-                        return True
+                    url1 = f"{self.backend_url}/healthz"
+                    try:
+                        resp1 = await client.get(url1)
+                        if resp1.status_code == 200:
+                            return True
+                    except Exception:
+                        pass
+
+                    if self.backend_url.endswith('/api'):
+                        base_url = self.backend_url[:-4]
+                        url2 = f"{base_url}/healthz"
+                        try:
+                            resp2 = await client.get(url2)
+                            if resp2.status_code == 200:
+                                return True
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            
+
             if attempt < max_retries - 1:
                 import asyncio
                 await asyncio.sleep(1)
-                return False
+
+        return False
     
     def _ensure_migration(self):
         """Garante que as colunas de sincronização existam na tabela clientes."""
@@ -71,7 +96,7 @@ class ClienteRepository:
         """Obtém todos os clientes (híbrido: servidor primeiro, fallback local)."""
         if self._is_online():
             try:
-                response = httpx.get(f"{self.backend_url}/api/clientes/", timeout=5.0)
+                response = httpx.get(f"{self.api_base}/clientes/", timeout=5.0)
                 if response.status_code == 200:
                     return response.json()
             except Exception as e:
@@ -102,7 +127,7 @@ class ClienteRepository:
                 cliente_local = self._get_local_cliente_by_id(cliente_id)
                 if cliente_local and cliente_local.get('uuid'):
                     response = httpx.get(
-                        f"{self.backend_url}/api/clientes/{cliente_local['uuid']}", 
+                        f"{self.api_base}/clientes/{cliente_local['uuid']}", 
                         timeout=5.0
                     )
                     if response.status_code == 200:
@@ -138,7 +163,7 @@ class ClienteRepository:
         if self._is_online():
             try:
                 response = httpx.post(
-                    f"{self.backend_url}/api/clientes/",
+                    f"{self.api_base}/clientes/",
                     json=cliente_data,
                     timeout=5.0
                 )
@@ -204,7 +229,7 @@ class ClienteRepository:
         if self._is_online():
             try:
                 response = httpx.put(
-                    f"{self.backend_url}/api/clientes/{cliente_uuid}",
+                    f"{self.api_base}/clientes/{cliente_uuid}",
                     json=cliente_data,
                     timeout=5.0
                 )
@@ -267,7 +292,7 @@ class ClienteRepository:
         if self._is_online():
             try:
                 response = httpx.delete(
-                    f"{self.backend_url}/api/clientes/{cliente_uuid}",
+                    f"{self.api_base}/clientes/{cliente_uuid}",
                     timeout=5.0
                 )
                 if response.status_code == 200:
@@ -346,24 +371,94 @@ class ClienteRepository:
             }
         
         try:
-            # FASE 1: Pull - buscar clientes do servidor
-            clientes_recebidos = await self._pull_clientes_do_servidor()
-            
-            # FASE 2: Push - enviar clientes antigos não sincronizados
-            clientes_antigos_enviados = await self._sincronizar_clientes_antigos()
-            
+            # Heurística de primeira sincronização: se houver clientes locais pendentes, priorizar PUSH primeiro
+            clientes_recebidos = 0
+            clientes_antigos_enviados = 0
+            try:
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT COUNT(*) FROM clientes 
+                        WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND TRIM(uuid) <> ''
+                    """)
+                    pendentes = cur.fetchone()[0]
+            except Exception:
+                pendentes = 0
+
+            if pendentes > 0:
+                clientes_antigos_enviados = await self._sincronizar_clientes_antigos()
+                clientes_recebidos = await self._pull_clientes_do_servidor()
+            else:
+                clientes_recebidos = await self._pull_clientes_do_servidor()
+                clientes_antigos_enviados = await self._sincronizar_clientes_antigos()
+
             # FASE 3: Push - enviar mudanças pendentes
             mudancas = await self._obter_mudancas_pendentes()
             mudancas_enviadas = 0
-            
+
             print(f"FASE 3: Enviando mudancas pendentes de clientes...")
             print(f"Encontradas {len(mudancas)} mudancas pendentes de clientes")
-            
+
             if len(mudancas) == 0:
                 print("Nenhuma sincronizacao necessaria para clientes")
-            
-            # Aqui você implementaria o envio das mudanças pendentes
-            # Por enquanto, apenas reportamos
+            else:
+                async with httpx.AsyncClient() as client:
+                    for ch in mudancas:
+                        try:
+                            op = ch['operation']
+                            data = json.loads(ch['data_json']) if ch.get('data_json') else {}
+                            entity_uuid = ch['entity_id']
+                            if op == 'CREATE':
+                                resp = await client.post(f"{self.backend_url}/api/clientes/", json=data, timeout=8.0)
+                                print(f"[CLIENTES][CREATE] status: {resp.status_code}")
+                                if resp.status_code in (200, 201):
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                    # Marcar local como sincronizado
+                                    try:
+                                        with sqlite3.connect(str(self.db_path)) as conn:
+                                            cur2 = conn.cursor()
+                                            cur2.execute("UPDATE clientes SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (entity_uuid,))
+                                            conn.commit()
+                                    except Exception:
+                                        pass
+                                elif resp.status_code == 409:
+                                    # Já existe no servidor: marcar como sincronizada e local synced
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                    try:
+                                        with sqlite3.connect(str(self.db_path)) as conn:
+                                            cur2 = conn.cursor()
+                                            cur2.execute("UPDATE clientes SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (entity_uuid,))
+                                            conn.commit()
+                                    except Exception:
+                                        pass
+                                else:
+                                    print(f"[CLIENTES][CREATE] erro: {resp.text}")
+                            elif op == 'UPDATE':
+                                resp = await client.put(f"{self.backend_url}/api/clientes/{entity_uuid}", json=data, timeout=8.0)
+                                print(f"[CLIENTES][UPDATE] status: {resp.status_code}")
+                                if resp.status_code == 200:
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                                elif resp.status_code == 404:
+                                    post = await client.post(f"{self.backend_url}/api/clientes/", json=data, timeout=8.0)
+                                    print(f"[CLIENTES][UPDATE->CREATE] status: {post.status_code}")
+                                    if post.status_code in (200, 201):
+                                        self._mark_change_synced(ch['id'])
+                                        mudancas_enviadas += 1
+                                else:
+                                    print(f"[CLIENTES][UPDATE] erro: {resp.text}")
+                            elif op == 'DELETE':
+                                resp = await client.delete(f"{self.backend_url}/api/clientes/{entity_uuid}", timeout=8.0)
+                                print(f"[CLIENTES][DELETE] status: {resp.status_code}")
+                                if resp.status_code in (200, 204):
+                                    self._mark_change_synced(ch['id'])
+                                    mudancas_enviadas += 1
+                            else:
+                                print(f"[CLIENTES] Operacao nao suportada: {op}")
+                        except Exception as e:
+                            print(f"[CLIENTES] Erro ao processar mudança pendente {ch.get('id')}: {e}")
             
             return {
                 "status": "success",
@@ -391,7 +486,7 @@ class ClienteRepository:
         # Primeiro verificar se o servidor tem clientes
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{self.backend_url}/api/clientes/", timeout=5.0)
+                response = await client.get(f"{self.api_base}/clientes/", timeout=5.0)
                 clientes_servidor = response.json() if response.status_code == 200 else []
                 servidor_vazio = len(clientes_servidor) == 0
         except Exception:
@@ -441,7 +536,7 @@ class ClienteRepository:
                         
                         # Tentar criar primeiro
                         response = await client.post(
-                            f"{self.backend_url}/api/clientes/",
+                            f"{self.api_base}/clientes/",
                             json=cliente_data,
                             timeout=10.0
                         )
@@ -537,7 +632,7 @@ class ClienteRepository:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.backend_url}/api/clientes/",
+                    f"{self.api_base}/clientes/",
                     timeout=10.0
                 )
                 
