@@ -1,5 +1,9 @@
 import flet as ft
-from utils.rongta_printer import RongtaPrinter
+import os
+if os.getenv('WEB_MODE') == 'true':
+    from utils.rongta_printer_web import RongtaPrinter
+else:
+    from utils.rongta_printer import RongtaPrinter
 from database.database import Database
 
 class PrinterConfigView(ft.UserControl):
