@@ -32,7 +32,10 @@ def main(page: ft.Page):
     page.bgcolor = ft.colors.WHITE
     
     # Detectar se está rodando no navegador
-    is_web = page.platform == "ios" or page.platform == "android" or page.platform == "web"
+    try:
+        is_web = str(page.platform) in ["ios", "android"] or os.getenv('WEB_MODE') == 'true'
+    except:
+        is_web = os.getenv('WEB_MODE') == 'true'
     
     # Configurações de janela (apenas para desktop)
     if not is_web:

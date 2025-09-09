@@ -18,9 +18,6 @@ from main import main
 
 def web_main(page: ft.Page):
     """Wrapper para execução web com configurações específicas."""
-    # Forçar modo web
-    page.platform = "web"
-    
     # Configurações específicas para web
     page.title = "PDV3 - Sistema de Gestão"
     page.theme_mode = ft.ThemeMode.LIGHT
