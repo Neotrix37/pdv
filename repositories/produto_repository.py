@@ -12,10 +12,11 @@ from pathlib import Path
 import os
 import platform
 from utils.migration_helper import MigrationHelper
+import json
 
 class ProdutoRepository:
-    def __init__(self, backend_url: str = "http://localhost:8000"):
-        self.backend_url = backend_url
+    def __init__(self, backend_url: str = None):
+        self.backend_url = backend_url or self._get_backend_url()
         self.db_path = self._get_database_path()
         self._ensure_migration()
         
@@ -457,6 +458,18 @@ class ProdutoRepository:
         """Obtém mudanças pendentes de sincronização."""
         # Garantir que a tabela change_log existe
         self._ensure_change_log_table()
+    
+    def _get_backend_url(self) -> str:
+        """Obtém a URL do backend do arquivo de configuração."""
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get('server_url', 'http://localhost:8000')
+        except Exception:
+            pass
+        return os.getenv("BACKEND_URL", "http://localhost:8000")
         
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.cursor()

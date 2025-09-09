@@ -6,15 +6,28 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import os
+import json
 import platform
 from utils.migration_helper import MigrationHelper
 
 class UsuarioRepository:
     def __init__(self):
-        self.backend_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        self.backend_url = self._get_backend_url()
         self.db_path = self._get_database_path()
         self._ensure_migration()
         self._ensure_change_log_table()
+    
+    def _get_backend_url(self) -> str:
+        """Obtém a URL do backend do arquivo de configuração."""
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get('server_url', 'http://localhost:8000')
+        except Exception:
+            pass
+        return os.getenv("BACKEND_URL", "http://localhost:8000")
     
     def _get_database_path(self) -> Path:
         """Obtém o caminho do banco de dados baseado no sistema operacional."""
