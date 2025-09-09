@@ -671,38 +671,625 @@ class PDVView(ft.UserControl):
             
             if produtos_baixos:
                 self.estoque_minimo_alert.open = True
+                self.update()
+            
         except Exception as e:
             print(f"Erro ao verificar estoque baixo: {e}")
 
-    def mostrar_detalhes_produto_carrinho(self, item):
+    def mostrar_produtos_estoque_baixo(self, e):
         """Mostra diálogo com produtos em estoque baixo"""
         try:
             produtos = self.db.fetchall("""
                 SELECT codigo, nome, estoque, estoque_minimo
                 FROM produtos
-{{ ... }}
+                WHERE estoque <= estoque_minimo
+                AND ativo = 1
+                ORDER BY nome
+            """)
             
-    except Exception as e:
-        print(f"Erro ao adicionar ao carrinho: {e}")
-        print(f"Produto: {produto}")  # Debug
+            conteudo = ft.Column(
+                controls=[
+                    ft.DataTable(
+                        columns=[
+                            ft.DataColumn(ft.Text("Código")),
+                            ft.DataColumn(ft.Text("Produto")),
+                            ft.DataColumn(ft.Text("Estoque")),
+                            ft.DataColumn(ft.Text("Mínimo"))
+                        ],
+                        rows=[
+                            ft.DataRow(
+                                cells=[
+                                    ft.DataCell(ft.Text(p['codigo'])),
+                                    ft.DataCell(ft.Text(p['nome'])),
+                                    ft.DataCell(ft.Text(str(p['estoque']))),
+                                    ft.DataCell(ft.Text(str(p['estoque_minimo'])))
+                                ]
+                            ) for p in produtos
+                        ]
+                    )
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                height=300
+            )
+            
+            self.page.dialog = ft.AlertDialog(
+                title=ft.Text("Produtos com Estoque Baixo"),
+                content=conteudo,
+                actions=[
+                    ft.TextButton("Fechar", on_click=lambda e: setattr(self.page.dialog, 'open', False))
+                ]
+            )
+            
+            self.page.dialog.open = True
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao mostrar produtos com estoque baixo: {e}")
+            
+    def fechar_dialogo(self, dialog):
+        """Fecha o diálogo modal"""
+        dialog.open = False
+        self.page.update()
+
+    def mostrar_erro(self, mensagem):
+        """Método centralizado para exibir erros"""
+        dialog = ft.AlertDialog(
+            title=ft.Text("Erro", color=ft.colors.RED),
+            content=ft.Text(mensagem, color=ft.colors.BLACK),
+            actions=[
+                ft.TextButton(
+                    "OK",
+                    on_click=lambda e: self.fechar_dialogo(dialog)
+                )
+            ]
+        )
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+    def mostrar_detalhes_produto(self, e):
+        """Mostra um modal com detalhes do produto"""
+        try:
+            produto = e.control.data
+            produto_id = produto['id']
+            
+            # Buscar informações detalhadas do produto
+            produto_detalhes = self.db.fetchone("""
+                SELECT p.*, c.nome as categoria_nome, f.nome as fornecedor_nome
+                FROM produtos p
+                LEFT JOIN categorias c ON p.categoria_id = c.id
+                LEFT JOIN fornecedores f ON p.fornecedor_id = f.id
+                WHERE p.id = ?
+            """, (produto_id,))
+            
+            if not produto_detalhes:
+                produto_detalhes = produto  # Usar dados básicos se não encontrar detalhes
+                
+            # Converter sqlite3.Row para dicionário se necessário
+            if hasattr(produto, 'keys'):
+                produto = dict(produto)
+            if hasattr(produto_detalhes, 'keys'):
+                produto_detalhes = dict(produto_detalhes)
+                
+            # Formatar preço e estoque baseado no tipo de venda
+            venda_por_peso = produto.get('venda_por_peso', 0) if isinstance(produto, dict) else (produto['venda_por_peso'] if 'venda_por_peso' in produto else 0)
+            
+            if venda_por_peso == 1:
+                preco_display = f"MT {float(produto.get('preco_venda', 0)):.2f}/KG"
+                estoque_display = f"{float(produto.get('estoque', 0)):.3f} KG"
+            else:
+                preco_display = f"MT {float(produto.get('preco_venda', 0)):.2f}"
+                estoque_display = str(produto.get('estoque', 0))
+                
+            # Criar conteúdo do modal
+            conteudo = ft.Column([
+                # Cabeçalho com nome do produto
+                ft.Container(
+                    content=ft.Text(
+                        produto['nome'],
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.colors.WHITE
+                    ),
+                    padding=15,
+                    gradient=ft.LinearGradient(
+                        begin=ft.alignment.top_left,
+                        end=ft.alignment.bottom_right,
+                        colors=[ft.colors.BLUE_900, ft.colors.BLUE_700]
+                    ),
+                    border_radius=ft.border_radius.only(top_left=10, top_right=10)
+                ),
+                
+                # Informações principais
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text("Código:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(produto['codigo'], color=ft.colors.BLACK)
+                        ]),
+                        ft.Row([
+                            ft.Text("Preço:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(preco_display, color=ft.colors.GREEN)
+                        ]),
+                        ft.Row([
+                            ft.Text("Estoque:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(estoque_display, color=ft.colors.BLUE)
+                        ]),
+                        ft.Divider(),
+                        ft.Text("Descrição:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                        ft.Text(produto['descricao'] or "Sem descrição", color=ft.colors.BLACK)
+                    ], spacing=10),
+                    padding=20,
+                    bgcolor=ft.colors.WHITE
+                ),
+                
+                # Informações adicionais
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Informações Adicionais", weight=ft.FontWeight.BOLD, size=16, color=ft.colors.BLACK),
+                        ft.Divider(),
+                        ft.Row([
+                            ft.Text("Categoria:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(str(produto_detalhes.get('categoria_nome', 'Não categorizado')), color=ft.colors.BLACK)
+                        ]),
+                        ft.Row([
+                            ft.Text("Fornecedor:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(str(produto_detalhes.get('fornecedor_nome', 'Não especificado')), color=ft.colors.BLACK)
+                        ]),
+                        ft.Row([
+                            ft.Text("Tipo de Venda:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text("Por Peso" if produto.get('venda_por_peso', 0) == 1 else "Unitário", color=ft.colors.BLACK)
+                        ]),
+                        ft.Row([
+                            ft.Text("Unidade de Medida:", weight=ft.FontWeight.BOLD, color=ft.colors.BLACK),
+                            ft.Text(produto.get('unidade_medida', "un").upper(), color=ft.colors.BLACK)
+                        ])
+                    ], spacing=10),
+                    padding=20,
+                    bgcolor=ft.colors.BLUE_50
+                ),
+                
+                # Container de espaçamento inferior
+                ft.Container(
+                    content=ft.Row([], alignment=ft.MainAxisAlignment.END),
+                    padding=15,
+                    bgcolor=ft.colors.WHITE,
+                    border_radius=ft.border_radius.only(bottom_left=10, bottom_right=10)
+                )
+            ], spacing=0)
+            
+            # Criar e mostrar o modal
+            dialog = ft.AlertDialog(
+                content=conteudo,
+                actions=[
+                    ft.TextButton(
+                        "Fechar",
+                        on_click=lambda e: self.fechar_dialogo(dialog)
+                    )
+                ],
+                actions_alignment=ft.MainAxisAlignment.END
+            )
+            
+            self.page.dialog = dialog
+            dialog.open = True
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao mostrar detalhes do produto: {e}")
+            self.mostrar_erro("Erro ao mostrar detalhes do produto!")
+            
+    def adicionar_ao_carrinho_e_fechar(self, produto, e):
+        """Adiciona produto ao carrinho e fecha o modal"""
+        try:
+            # Adicionar ao carrinho
+            self.adicionar_ao_carrinho(ft.ControlEvent(control=ft.IconButton(data=produto)))
+            
+            # Fechar o modal
+            self.page.dialog.open = False
+            self.page.update()
+            
+        except Exception as e:
+            print(f"Erro ao adicionar ao carrinho e fechar: {e}")
+            self.mostrar_erro("Erro ao adicionar produto ao carrinho!")
+
+    def adicionar_ao_carrinho(self, e):
+        """Adiciona produto ao carrinho"""
+        try:
+            produto = dict(e.control.data)  # Converter sqlite3.Row para dicionário
+            
+            if self.venda_atual_index < 0:
+                self.iniciar_nova_venda()
+            
+            # Se for produto vendido por peso, mostrar diálogo melhorado
+            if produto['venda_por_peso'] == 1:
+                def close_dialog(e):
+                    self.page.dialog.open = False
+                    self.page.update()
+
+                def calcular_por_peso(e):
+                    try:
+                        peso = float(peso_field.value or 0)
+                        valor = peso * produto['preco_venda']
+                        valor_field.value = f"{valor:.2f}"
+                        peso_calculado_text.value = f"Peso: {peso:.3f} KG"
+                        self.page.update()
+                    except ValueError:
+                        valor_field.value = "0.00"
+                        peso_calculado_text.value = "Peso: 0.000 KG"
+                        self.page.update()
+
+                def calcular_por_valor(e):
+                    try:
+                        valor = float(valor_field.value or 0)
+                        peso = valor / produto['preco_venda']
+                        peso_field.value = f"{peso:.3f}"
+                        peso_calculado_text.value = f"Peso: {peso:.3f} KG"
+                        self.page.update()
+                    except ValueError:
+                        peso_field.value = "0.000"
+                        peso_calculado_text.value = "Peso: 0.000 KG"
+                        self.page.update()
+
+                def confirmar_venda(e):
+                    try:
+                        valor = float(valor_field.value or 0)
+                        peso = float(peso_field.value or 0)
+                        
+                        if valor <= 0 or peso <= 0:
+                            self.mostrar_erro("Valor ou peso inválido!")
+                            return
+                            
+                        if peso > produto['estoque']:
+                            self.mostrar_erro(f"Estoque insuficiente! Disponível: {produto['estoque']:.3f} KG")
+                            return
+                            
+                        # Adicionar ao carrinho
+                        self.itens.append({
+                            'id': produto['id'],
+                            'codigo': produto['codigo'],
+                            'nome': produto['nome'],
+                            'quantidade': peso,  # Peso em KG
+                            'preco': produto['preco_venda'],  # Preço por KG
+                            'subtotal': valor,
+                            'venda_por_peso': True,
+                            'unidade_medida': 'kg'
+                        })
+                        
+                        self.atualizar_carrinho()
+                        close_dialog(None)
+                        
+                    except ValueError:
+                        self.mostrar_erro("Valores inválidos!")
+                
+                peso_field = ft.TextField(
+                    label="Peso (KG)",
+                    width=200,
+                    height=50,
+                    text_size=14,
+                    color=ft.colors.BLACK,
+                    on_change=calcular_por_peso,
+                    suffix_text="KG"
+                )
+                
+                valor_field = ft.TextField(
+                    label="Valor (MT)",
+                    width=200,
+                    height=50,
+                    text_size=14,
+                    color=ft.colors.BLACK,
+                    on_change=calcular_por_valor,
+                    prefix_text="MT ",
+                    autofocus=True  # Foco inicial no campo de valor
+                )
+                
+                peso_calculado_text = ft.Text(
+                    "Peso: 0.000 KG",
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.colors.BLUE_900
+                )
+                
+                self.page.dialog = ft.AlertDialog(
+                    title=ft.Text(
+                        "Venda por Peso",
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.colors.BLACK
+                    ),
+                    content=ft.Container(
+                        content=ft.Column([
+                            # Informações do produto
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text(
+                                        produto['nome'],
+                                        size=18,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.colors.BLACK
+                                    ),
+                                    ft.Text(
+                                        f"Código: {produto['codigo']}",
+                                        color=ft.colors.BLACK
+                                    ),
+                                ]),
+                                bgcolor=ft.colors.BLUE_50,
+                                padding=10,
+                                border_radius=5
+                            ),
+                            
+                            # Preço e estoque
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Container(
+                                        content=ft.Column([
+                                            ft.Text(
+                                                "Preço/KG",
+                                                color=ft.colors.BLACK,
+                                                weight=ft.FontWeight.BOLD
+                                            ),
+                                            ft.Text(
+                                                f"MT {produto['preco_venda']:.2f}",
+                                                size=20,
+                                                color=ft.colors.GREEN
+                                            )
+                                        ]),
+                                        padding=10
+                                    ),
+                                    ft.VerticalDivider(),
+                                    ft.Container(
+                                        content=ft.Column([
+                                            ft.Text(
+                                                "Estoque",
+                                                color=ft.colors.BLACK,
+                                                weight=ft.FontWeight.BOLD
+                                            ),
+                                            ft.Text(
+                                                f"{produto['estoque']:.3f} KG",
+                                                size=20,
+                                                color=ft.colors.BLUE
+                                            )
+                                        ]),
+                                        padding=10
+                                    )
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_AROUND),
+                                bgcolor=ft.colors.BLUE_50,
+                                padding=10,
+                                border_radius=5
+                            ),
+                            
+                            # Campos de entrada
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Text(
+                                        "Digite o valor OU o peso:",
+                                        size=16,
+                                        color=ft.colors.BLACK,
+                                        weight=ft.FontWeight.BOLD
+                                    ),
+                                    valor_field,
+                                    peso_field,
+                                    peso_calculado_text
+                                ], spacing=10),
+                                padding=20
+                            )
+                        ], spacing=20),
+                        padding=10
+                    ),
+                    actions=[
+                        ft.TextButton(
+                            "Cancelar",
+                            on_click=close_dialog,
+                            style=ft.ButtonStyle(
+                                color=ft.colors.RED
+                            )
+                        ),
+                        ft.TextButton(
+                            "Confirmar",
+                            on_click=lambda e: confirmar_venda(e),
+                            style=ft.ButtonStyle(
+                                color=ft.colors.GREEN
+                            )
+                        )
+                    ],
+                    actions_alignment=ft.MainAxisAlignment.END
+                )
+                self.page.dialog.open = True
+                self.page.update()
+                return
+                
+            # Continua com o fluxo normal para produtos não vendidos por peso
+            # Verificar estoque disponível
+            estoque_atual = self.db.fetchone("""
+                SELECT estoque FROM produtos WHERE id = ?
+            """, (produto['id'],))['estoque']
+            
+            # Procurar se o produto já existe no carrinho
+            produto_existente = None
+            for item in self.itens:
+                if item['id'] == produto['id']:
+                    produto_existente = item
+                    break
+            
+            # Se o produto já existe, apenas aumenta a quantidade
+            if produto_existente:
+                # Verificar se há estoque suficiente
+                if produto_existente['quantidade'] + 1 > estoque_atual:
+                    self.page.show_snack_bar(
+                        ft.SnackBar(
+                            content=ft.Text("Produto sem estoque disponível!"),
+                            bgcolor=ft.colors.RED_700
+                        )
+                    )
+                    return
+                    
+                produto_existente['quantidade'] += 1
+                produto_existente['subtotal'] = produto_existente['quantidade'] * produto_existente['preco']
+            else:
+                # Se não existe, adiciona novo item
+                self.itens.append({
+                    'id': produto['id'],
+                    'codigo': produto['codigo'],
+                    'nome': produto['nome'],
+                    'quantidade': 1,
+                    'preco': produto['preco_venda'],
+                    'subtotal': produto['preco_venda'],
+                    'venda_por_peso': False,
+                    'unidade_medida': produto.get('unidade_medida', 'un')
+                })
+            
+            # Atualizar interface
+            self.atualizar_carrinho()
+            
+            # Atualizar quantidade do produto na tabela
+            self.atualizar_quantidade_produto(produto['id'])
+            
+            self.update()
+            
+        except Exception as e:
+            print(f"Erro ao adicionar ao carrinho: {e}")
+            print(f"Produto: {produto}")  # Debug
 
     def atualizar_quantidade_produto(self, produto_id):
         """Atualiza a quantidade exibida do produto baseado no carrinho"""
         try:
-            if self._is_web():
-                # Usar cache do backend
-                produto = next((p for p in self._produtos_cache if p.get('id') == produto_id), None)
-                if not produto:
-                    return
-                codigo = produto.get('codigo')
-                estoque_atual = float(produto.get('estoque') or 0)
+            # Buscar produto completo
+            produto = self.db.fetchone("""
+                SELECT id, codigo, estoque FROM produtos WHERE id = ?
+            """, (produto_id,))
+            
+            if not produto:
+                return
+            
+            # Calcular quantidade no carrinho
+            qtd_carrinho = sum(
+                item['quantidade'] for item in self.itens 
+                if item['id'] == produto_id
+            )
+            
+            # Atualizar exibição na tabela
+            for row in self.produtos_table.rows:
+                if row.cells[0].content.value == produto['codigo']:
+                    estoque_disponivel = produto['estoque'] - qtd_carrinho
+                    row.cells[4].content.value = str(estoque_disponivel)
+                    row.cells[4].content.color = ft.colors.RED if estoque_disponivel < 10 else ft.colors.BLACK
+                    self.produtos_table.update()  # Forçar atualização da tabela
+                    break
+                
+        except Exception as e:
+            print(f"Erro ao atualizar quantidade do produto: {e}")
+
+    def atualizar_carrinho(self):
+        """Atualiza a exibição do carrinho e totais"""
+        try:
+            # Limpar linhas existentes
+            self.carrinho_table.rows.clear()
+            
+            # Adicionar todos os itens
+            for item in self.itens:
+                self.carrinho_table.rows.append(
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.TextButton(
+                                text=item['nome'],
+                                on_click=lambda e, item=item: self.mostrar_detalhes_produto_carrinho(item)
+                            )),
+                            ft.DataCell(
+                                ft.Row([
+                                    ft.IconButton(
+                                        icon=ft.icons.INFO_OUTLINE,
+                                        icon_color=ft.colors.BLUE,
+                                        tooltip="Detalhes",
+                                        data=item,
+                                        on_click=lambda e, item=item: self.mostrar_detalhes_produto_carrinho(item),
+                                        icon_size=20
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.icons.EDIT,
+                                        icon_color=ft.colors.BLUE,
+                                        tooltip="Editar",
+                                        data=item,
+                                        on_click=self.editar_item,
+                                        icon_size=20
+                                    ),
+                                    ft.IconButton(
+                                        icon=ft.icons.DELETE,
+                                        icon_color=ft.colors.RED,
+                                        tooltip="Remover",
+                                        data=item,
+                                        on_click=self.remover_item,
+                                        icon_size=20
+                                    )
+                                ])
+                            )
+                        ]
+                    )
+                )
+            
+            # Atualizar total
+            self.total_venda = sum(item['subtotal'] for item in self.itens)
+            self.total_text.value = f"Total: MT {self.total_venda:.2f}"
+            
+            # Habilitar/desabilitar botão finalizar
+            self.btn_finalizar.disabled = len(self.itens) == 0 or (
+                self.forma_pagamento.value == "Dinheiro" and 
+                (not self.valor_recebido_field.value or float(self.valor_recebido_field.value or 0) < self.total_venda)
+            )
+            
+            # Atualizar exibição do estoque para todos os produtos
+            for item in self.itens:
+                self.atualizar_quantidade_produto(item['id'])
+            
+            self.update()
+        except Exception as e:
+            print(f"Erro ao atualizar carrinho: {e}")
+
+    def mostrar_detalhes_produto_carrinho(self, item):
+        """Mostra detalhes do produto do carrinho em um modal"""
+        try:
+            # Converter para dicionário se for um sqlite3.Row
+            if hasattr(item, 'keys'):
+                item = dict(item)
+                
+            # Buscar informações completas do produto no banco de dados
+            produto_id = item.get('id')
+            if not produto_id:
+                self.mostrar_erro("ID do produto não encontrado!")
+                return
+                
+            produto = self.db.fetchone("""
+                SELECT p.*, c.nome as categoria, f.nome as fornecedor
+                FROM produtos p
+                LEFT JOIN categorias c ON p.categoria_id = c.id
+                LEFT JOIN fornecedores f ON p.fornecedor_id = f.id
+                WHERE p.id = ?
+            """, (produto_id,))
+            
+            if not produto:
+                self.mostrar_erro("Produto não encontrado!")
+                return
+                
+            # Converter para dicionário se for um sqlite3.Row
+            if hasattr(produto, 'keys'):
+                produto = dict(produto)
+            
+            # Determinar tipo de venda e formatação de preço/estoque
+            venda_por_peso = produto.get('venda_por_peso', 0)
+            if venda_por_peso == 1:
+                tipo_venda = "Por Peso"
+                preco_display = f"MT {float(produto.get('preco_venda', 0)):.2f}/KG"
+                estoque_display = f"{float(produto.get('estoque', 0)):.3f} KG"
+                quantidade_display = f"{float(item.get('quantidade', 0)):.3f} KG"
             else:
-                # Buscar produto completo no SQLite
-                produto = self.db.fetchone(
-                    """
-                    SELECT id, codigo, estoque FROM produtos WHERE id = ?
-                    """,
-                    (produto_id,)
+                tipo_venda = "Unitário"
+                preco_display = f"MT {float(produto.get('preco_venda', 0)):.2f}"
+                estoque = float(produto.get('estoque', 0))
+                quantidade = float(item.get('quantidade', 0))
+                estoque_display = str(int(estoque)) if estoque == int(estoque) else str(estoque)
+                quantidade_display = str(int(quantidade)) if quantidade == int(quantidade) else str(quantidade)
+            
+            # Calcular subtotal
+            subtotal = float(item.get('subtotal', 0))
             
             # Criar e mostrar o modal
             def close_dialog(e):
