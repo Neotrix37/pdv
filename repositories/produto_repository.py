@@ -21,6 +21,11 @@ class ProdutoRepository:
         self.api_base = self._make_api_base(self.backend_url)
         self.db_path = self._get_database_path()
         self._ensure_migration()
+        # Garantir que todos os produtos possuam UUID
+        try:
+            self._backfill_missing_uuids()
+        except Exception as e:
+            print(f"[PRODUTO_REPO] Falha no backfill de UUIDs: {e}")
         
     def _get_database_path(self):
         """Obtém o caminho do banco de dados SQLite local."""
@@ -72,6 +77,28 @@ class ProdutoRepository:
         """Normaliza a base da API, assegurando que termine com /api sem duplicar."""
         base = (backend_url or '').rstrip('/')
         return base if base.endswith('/api') else base + '/api'
+
+    def _backfill_missing_uuids(self):
+        """Atribui UUID para qualquer produto local que ainda não tenha."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            # Selecionar produtos sem UUID ou UUID vazio
+            cur.execute(
+                """
+                SELECT id FROM produtos 
+                WHERE uuid IS NULL OR TRIM(uuid) = ''
+                """
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return
+            print(f"[BACKFILL] Encontrados {len(rows)} produtos sem UUID. Gerando...")
+            for r in rows:
+                novo_uuid = str(uuid.uuid4())
+                cur.execute("UPDATE produtos SET uuid = ? WHERE id = ?", (novo_uuid, r['id']))
+            conn.commit()
+            print(f"[BACKFILL] UUID atribuido para {len(rows)} produtos.")
     
     async def is_backend_online(self) -> bool:
         """Versão assíncrona para verificar se o backend está online."""
@@ -312,7 +339,7 @@ class ProdutoRepository:
         if self._is_online():
             try:
                 response = httpx.post(
-                    f"{self.api_base}/produtos", 
+                    f"{self.api_base}/produtos/", 
                     json=produto_data,
                     timeout=5.0
                 )
@@ -375,9 +402,35 @@ class ProdutoRepository:
         # Obter UUID do produto local
         produto_local = self._get_local_produto_by_id(produto_id)
         if not produto_local:
-            return None
+            # Tentar sem filtro de ativo
+            try:
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT id, codigo, nome, descricao, preco_custo, preco_venda,
+                               estoque, estoque_minimo, categoria_id, venda_por_peso,
+                               unidade_medida, ativo, created_at, updated_at,
+                               COALESCE(uuid, '') as uuid, COALESCE(synced, 0) as synced
+                        FROM produtos WHERE id = ?
+                    """, (produto_id,))
+                    row = cur.fetchone()
+                    if row:
+                        produto_local = dict(row)
+            except Exception as e:
+                print(f"[UPDATE] Falha ao buscar produto sem filtro de ativo: {e}")
+        if not produto_local:
+            # Prosseguir com dados informados para evitar retorno None
+            print(f"[UPDATE] Produto ID {produto_id} nao encontrado no local. Prosseguindo com dados fornecidos.")
+            produto_local = {'id': produto_id, **produto_data, 'uuid': produto_data.get('uuid', '')}
         
-        produto_uuid = produto_local['uuid']
+        # Garantir que o produto possua UUID (produtos antigos podem não ter)
+        produto_uuid = (produto_local.get('uuid') or '').strip()
+        if not produto_uuid:
+            produto_uuid = str(uuid.uuid4())
+            self._update_produto_uuid(produto_id, produto_uuid)
+            produto_local['uuid'] = produto_uuid
+            print(f"[UPDATE] Produto ID {produto_id} sem UUID - gerado e salvo: {produto_uuid}")
         
         # Tentar atualizar no servidor
         if self._is_online():
@@ -386,7 +439,7 @@ class ProdutoRepository:
                 response = httpx.put(
                     f"{self.api_base}/produtos/{produto_uuid}",
                     json=produto_data,
-                    timeout=5.0
+                    timeout=8.0
                 )
                 print(f"Response status: {response.status_code}")
                 if response.status_code == 200:
@@ -394,6 +447,38 @@ class ProdutoRepository:
                     server_produto = response.json()
                     produto_data.update(server_produto)
                     print(f"Produto atualizado no servidor com sucesso")
+                elif response.status_code == 404:
+                    # Pode ser produto legado no servidor sem UUID – tentar casar por código
+                    codigo = produto_data.get('codigo') or produto_local.get('codigo')
+                    print(f"Produto nao encontrado por UUID. Tentando localizar por codigo: {codigo}")
+                    try:
+                        list_resp = httpx.get(f"{self.api_base}/produtos/", timeout=8.0)
+                        if list_resp.status_code == 200 and codigo:
+                            servidor_lista = list_resp.json()
+                            alvo = next((p for p in servidor_lista if p.get('codigo') == codigo), None)
+                            if alvo:
+                                put2 = httpx.put(
+                                    f"{self.api_base}/produtos/{alvo['id']}",
+                                    json=produto_data,
+                                    timeout=8.0
+                                )
+                                print(f"PUT por codigo status: {put2.status_code}")
+                                if put2.status_code == 200:
+                                    produto_data['synced'] = 1
+                                    produto_data.update(put2.json())
+                                else:
+                                    print(f"Falha no PUT por codigo: {put2.text}")
+                            else:
+                                # Nao existe no servidor – criar
+                                post_resp = httpx.post(f"{self.api_base}/produtos/", json=produto_data, timeout=8.0)
+                                print(f"POST create apos 404 status: {post_resp.status_code}")
+                                if post_resp.status_code in (200, 201):
+                                    produto_data['synced'] = 1
+                                    produto_data.update(post_resp.json())
+                        else:
+                            print(f"Falha ao listar produtos no servidor: {list_resp.status_code if 'list_resp' in locals() else 'sem resposta'}")
+                    except Exception as ie:
+                        print(f"Erro no fallback por codigo: {ie}")
                 else:
                     print(f"Erro HTTP {response.status_code}: {response.text}")
             except Exception as e:
@@ -403,7 +488,22 @@ class ProdutoRepository:
         
         # Sempre atualizar localmente
         produto_atualizado = self._update_local_produto(produto_id, produto_data)
-        
+
+        # Garantir retorno não-nulo para evitar erro na UI
+        if not produto_atualizado:
+            try:
+                produto_atualizado = self._get_local_produto_by_id(produto_id)
+            except Exception:
+                produto_atualizado = None
+        if not produto_atualizado:
+            # Compor um retorno mínimo com os dados informados
+            retorno_minimo = {
+                'id': produto_id,
+                'uuid': produto_uuid,
+                **produto_data
+            }
+            produto_atualizado = retorno_minimo
+
         # Log para sincronização se não foi sincronizado
         if produto_data['synced'] == 0:
             print(f"Registrando mudanca UPDATE para produto {produto_uuid}")
@@ -499,6 +599,23 @@ class ProdutoRepository:
         """Obtém mudanças pendentes de sincronização."""
         # Garantir que a tabela change_log existe
         self._ensure_change_log_table()
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT id, entity_type, entity_id, operation, data_json, created_at, updated_at, status
+                    FROM change_log
+                    WHERE status = 'pending' AND entity_type = 'produtos'
+                    ORDER BY datetime(created_at) ASC
+                    """
+                )
+                rows = cursor.fetchall()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            print(f"Erro ao obter mudancas pendentes: {e}")
+            return []
     
     def _get_backend_url(self) -> str:
         """Obtém a URL do backend do arquivo de configuração."""
@@ -716,26 +833,32 @@ class ProdutoRepository:
                 
                 for produto_servidor in produtos_servidor:
                     try:
-                        # Se produto não tem UUID, pular (produto antigo sem sincronização)
-                        if 'uuid' not in produto_servidor or not produto_servidor['uuid']:
-                            print(f"Produto {produto_servidor['nome']} sem UUID - pulando")
+                        # Extrair identificador do servidor: aceitar uuid ou id
+                        servidor_uuid = (produto_servidor.get('uuid') or produto_servidor.get('id') or '').strip()
+                        if not servidor_uuid:
+                            nome_dbg = produto_servidor.get('nome', 'N/A')
+                            print(f"Produto {nome_dbg} sem id/uuid - pulando")
                             continue
-                            
+                        
                         # Verificar se produto já existe localmente pelo UUID
-                        produto_local = self._get_produto_by_uuid(produto_servidor['uuid'])
+                        produto_local = self._get_local_produto_by_uuid(servidor_uuid)
                         
                         if produto_local is None:
                             # Produto novo - inserir localmente
+                            # Garantir que vamos persistir o identificador como uuid
+                            produto_servidor = {**produto_servidor, 'uuid': servidor_uuid}
                             if self._inserir_produto_do_servidor(produto_servidor):
                                 produtos_recebidos += 1
-                                print(f"Produto novo inserido: {produto_servidor['nome']}")
+                                print(f"Produto novo inserido: {produto_servidor.get('nome', 'Sem nome')}")
                         else:
                             # Produto existe - verificar se precisa atualizar
                             if self._produto_servidor_mais_recente(produto_local, produto_servidor):
+                                # Garantir uuid no payload para manter consistência local
+                                produto_servidor = {**produto_servidor, 'uuid': servidor_uuid}
                                 if self._atualizar_produto_do_servidor(produto_local['id'], produto_servidor):
                                     produtos_atualizados += 1
-                                    print(f"Produto atualizado: {produto_servidor['nome']}")
-                    
+                                    print(f"Produto atualizado: {produto_servidor.get('nome', 'Sem nome')}")
+                
                     except Exception as e:
                         print(f"Erro ao processar produto {produto_servidor.get('nome', 'N/A')}: {e}")
                 
@@ -754,7 +877,7 @@ class ProdutoRepository:
         # Primeiro verificar se o servidor tem produtos
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{self.backend_url}/api/produtos/", timeout=5.0)
+                response = await client.get(f"{self.api_base}/produtos/", timeout=5.0)
                 produtos_servidor = response.json() if response.status_code == 200 else []
                 servidor_vazio = len(produtos_servidor) == 0
         except Exception:
@@ -825,7 +948,7 @@ class ProdutoRepository:
                     
                     # Tentar criar no servidor
                     response = await client.post(
-                        f"{self.backend_url}/api/produtos/",
+                        f"{self.api_base}/produtos/",
                         json=produto_data,
                         timeout=10.0
                     )
@@ -841,7 +964,7 @@ class ProdutoRepository:
                         print(f"Produto {produto['nome']} ja existe, tentando atualizar...")
                         
                         # Buscar produto existente por código
-                        list_response = await client.get(f"{self.backend_url}/api/produtos/", timeout=5.0)
+                        list_response = await client.get(f"{self.api_base}/produtos/", timeout=5.0)
                         if list_response.status_code == 200:
                             produtos_servidor = list_response.json()
                             produto_existente = None
@@ -853,7 +976,7 @@ class ProdutoRepository:
                             if produto_existente:
                                 # Atualizar produto existente
                                 update_response = await client.put(
-                                    f"{self.backend_url}/api/produtos/{produto_existente['id']}",
+                                    f"{self.api_base}/produtos/{produto_existente['id']}",
                                     json=produto_data,
                                     timeout=5.0
                                 )

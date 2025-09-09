@@ -27,6 +27,15 @@ class ProdutosView(ft.UserControl, TranslationMixin):
         self.inicializar_campos()
         self.inicializar_tabela()
 
+    def _safe_update(self):
+        """Atualiza a UI com segurança, evitando erro 'Control must be added to the page first'."""
+        try:
+            if hasattr(self, 'page') and self.page:
+                super().update()
+        except Exception as e:
+            # Apenas loga; não interrompe o fluxo
+            print(f"[UI] Aviso ao atualizar view: {e}")
+
     def inicializar_campos(self):
         # Campo de busca
         self.busca_field = ft.TextField(
@@ -350,7 +359,7 @@ class ProdutosView(ft.UserControl, TranslationMixin):
                     )
                 )
             
-            self.update()
+            self._safe_update()
             
         except Exception as e:
             print(f"❌ Erro no repositório híbrido ao carregar produtos: {e}")
@@ -405,7 +414,7 @@ class ProdutosView(ft.UserControl, TranslationMixin):
                         ]))
                     ])
                 )
-            self.update()
+            self._safe_update()
         except Exception as e:
             print(f"Erro no fallback ao carregar produtos: {e}")
 
@@ -452,20 +461,16 @@ class ProdutosView(ft.UserControl, TranslationMixin):
             # Usar repositório híbrido para salvar (versão síncrona)
             try:
                 if self.produto_em_edicao:
-                    # Buscar UUID do produto para atualização
-                    produto_local = self.db.fetchone(
-                        "SELECT uuid FROM produtos WHERE id = ?",
-                        (self.produto_em_edicao,)
-                    )
-                    if produto_local and produto_local['uuid']:
-                        resultado = self.produto_repository.update(self.produto_em_edicao, dados)
-                        print(f"✅ Produto atualizado via repositório híbrido: {resultado.get('nome')}")
-                    else:
-                        self.mostrar_erro("Erro: UUID do produto não encontrado!")
-                        return
+                    # Deixar o repositório tratar UUID ausente (gera e persiste automaticamente)
+                    resultado = self.produto_repository.update(self.produto_em_edicao, dados)
+                    if not resultado:
+                        raise ValueError("Falha ao atualizar: retorno vazio do repositório")
+                    print(f"✅ Produto atualizado via repositório híbrido: {resultado.get('nome')}")
                 else:
                     # Criar novo produto
                     resultado = self.produto_repository.create(dados)
+                    if not resultado:
+                        raise ValueError("Falha ao criar: retorno vazio do repositório")
                     print(f"✅ Produto criado via repositório híbrido: {resultado.get('nome')}")
                     print(f"   UUID: {resultado.get('uuid')}")
                     print(f"   Sincronizado: {'Sim' if resultado.get('synced') else 'Não'}")
