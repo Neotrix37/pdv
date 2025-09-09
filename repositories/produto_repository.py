@@ -146,21 +146,24 @@ class ProdutoRepository:
         print("Backend offline apos todas as tentativas")
         return False
     
-    def _log_change(self, entity_id: str, operation: str, data: Dict[Any, Any]):
-        """Registra mudança no change_log para sincronização posterior."""
+    def _log_change(self, entity_id: str, operation: str, data: Dict[Any, Any], status: str = 'pending'):
+        """Registra mudança no change_log com status customizável (pending/synced)."""
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO change_log (entity_type, entity_id, operation, data_json, created_at, status)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                'produtos', 
-                entity_id, 
-                operation, 
-                json.dumps(data), 
-                datetime.now().isoformat(),
-                'pending'
-            ))
+                """,
+                (
+                    'produtos',
+                    entity_id,
+                    operation,
+                    json.dumps(data),
+                    datetime.now().isoformat(),
+                    status,
+                ),
+            )
             conn.commit()
     
     def get_all(self) -> List[Dict[str, Any]]:
@@ -343,11 +346,17 @@ class ProdutoRepository:
                     json=produto_data,
                     timeout=5.0
                 )
-                if response.status_code == 201:
+                if response.status_code in [200, 201]:
                     produto_data['synced'] = 1
                     server_produto = response.json()
                     # Usar dados do servidor se disponível
                     produto_data.update(server_produto)
+                    # Opção B: registrar como 'synced' para aparecer no relatório
+                    try:
+                        self._ensure_change_log_table()
+                        self._log_change(produto_data['uuid'], 'CREATE', produto_data, status='synced')
+                    except Exception as le:
+                        print(f"[LOG] Falha ao registrar change synced (CREATE): {le}")
             except Exception as e:
                 print(f"Erro ao criar produto no servidor: {e}")
         
@@ -408,7 +417,7 @@ class ProdutoRepository:
                     conn.row_factory = sqlite3.Row
                     cur = conn.cursor()
                     cur.execute("""
-                        SELECT id, codigo, nome, descricao, preco_custo, preco_venda,
+                        SELECT id, codigo, nome, descricao, preco_custo, preco_venda, 
                                estoque, estoque_minimo, categoria_id, venda_por_peso,
                                unidade_medida, ativo, created_at, updated_at,
                                COALESCE(uuid, '') as uuid, COALESCE(synced, 0) as synced
@@ -447,15 +456,20 @@ class ProdutoRepository:
                     server_produto = response.json()
                     produto_data.update(server_produto)
                     print(f"Produto atualizado no servidor com sucesso")
+                    # Opção B: registrar como 'synced' para aparecer no relatório
+                    try:
+                        self._ensure_change_log_table()
+                        self._log_change(produto_uuid, 'UPDATE', produto_data, status='synced')
+                    except Exception as le:
+                        print(f"[LOG] Falha ao registrar change synced (UPDATE): {le}")
                 elif response.status_code == 404:
-                    # Pode ser produto legado no servidor sem UUID – tentar casar por código
-                    codigo = produto_data.get('codigo') or produto_local.get('codigo')
-                    print(f"Produto nao encontrado por UUID. Tentando localizar por codigo: {codigo}")
+                    # Produto não existe no servidor, verificar se existe produto com mesmo código
+                    print(f"Produto nao encontrado por UUID. Tentando localizar por codigo: {produto_data.get('codigo')}")
                     try:
                         list_resp = httpx.get(f"{self.api_base}/produtos/", timeout=8.0)
-                        if list_resp.status_code == 200 and codigo:
+                        if list_resp.status_code == 200 and produto_data.get('codigo'):
                             servidor_lista = list_resp.json()
-                            alvo = next((p for p in servidor_lista if p.get('codigo') == codigo), None)
+                            alvo = next((p for p in servidor_lista if p.get('codigo') == produto_data.get('codigo')), None)
                             if alvo:
                                 put2 = httpx.put(
                                     f"{self.api_base}/produtos/{alvo['id']}",
@@ -562,6 +576,11 @@ class ProdutoRepository:
                 )
                 if response.status_code == 200:
                     synced = 1
+                    try:
+                        self._ensure_change_log_table()
+                        self._log_change(produto_uuid, 'DELETE', {'id': produto_id}, status='synced')
+                    except Exception as le:
+                        print(f"[LOG] Falha ao registrar change synced (DELETE): {le}")
             except Exception as e:
                 print(f"Erro ao deletar produto no servidor: {e}")
         
@@ -629,17 +648,6 @@ class ProdutoRepository:
             pass
         return os.getenv("BACKEND_URL", "http://localhost:8000")
         
-        with sqlite3.connect(str(self.db_path)) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM change_log 
-                WHERE status = 'pending' 
-                ORDER BY created_at DESC
-            """)
-            
-            columns = [desc[0] for desc in cursor.description]
-            return [dict(zip(columns, row)) for row in cursor.fetchall()]
-    
     def _ensure_change_log_table(self):
         """Garante que a tabela change_log existe."""
         with sqlite3.connect(str(self.db_path)) as conn:
@@ -710,6 +718,40 @@ class ProdutoRepository:
                                 self._mark_change_synced(mudanca['id'])
                                 enviadas += 1
                                 print(f"Mudanca CREATE sincronizada")
+                            elif response.status_code == 409:
+                                # Já existe no servidor – verificar por UUID/codigo e marcar como sincronizada
+                                try:
+                                    # Tentar localizar no servidor
+                                    list_resp = await client.get(f"{self.api_base}/produtos/", timeout=5.0)
+                                    if list_resp.status_code == 200:
+                                        produtos_srv = list_resp.json()
+                                        alvo = None
+                                        uuid_data = data.get('uuid')
+                                        codigo_data = data.get('codigo')
+                                        for p in produtos_srv:
+                                            if (uuid_data and str(p.get('uuid') or p.get('id')) == str(uuid_data)) or \
+                                               (codigo_data and p.get('codigo') == codigo_data):
+                                                alvo = p
+                                                break
+                                        if alvo is not None:
+                                            # Marcar change como sincronizada
+                                            self._mark_change_synced(mudanca['id'])
+                                            enviadas += 1
+                                            print("CREATE 409: produto ja existe no servidor – mudanca marcada como sincronizada")
+                                            # Marcar produto local como sincronizado, se existir
+                                            try:
+                                                if uuid_data:
+                                                    local = self._get_produto_by_uuid(uuid_data)
+                                                    if local and 'id' in local:
+                                                        self._mark_produto_sincronizado(local['id'])
+                                            except Exception as mi:
+                                                print(f"[WARN] Falha ao marcar produto local como sincronizado: {mi}")
+                                        else:
+                                            print("CREATE 409: produto nao localizado por uuid/codigo na lista do servidor")
+                                    else:
+                                        print(f"Falha ao listar produtos do servidor para tratar 409: {list_resp.status_code}")
+                                except Exception as h:
+                                    print(f"Erro ao tratar CREATE 409: {h}")
                             else:
                                 print(f"Erro CREATE: {response.text}")
                     
@@ -800,16 +842,40 @@ class ProdutoRepository:
             print(f"Produtos antigos enviados: {produtos_antigos_enviados}")
             print(f"Mudancas enviadas: {enviadas}")
             
+            aplicadas_direct = self._count_recent_synced_changes(10)
             return {
                 "status": "success",
-                "enviadas": enviadas + produtos_antigos_enviados,
+                "message": "Sincronização concluída.",
                 "recebidas": produtos_recebidos,
-                "message": f"Sincronização concluída. {produtos_recebidos} produtos recebidos, {enviadas + produtos_antigos_enviados} mudanças enviadas."
+                "antigos_enviados": produtos_antigos_enviados,
+                "enviadas": enviadas,
+                "aplicadas_diretamente_ultimos_10min": aplicadas_direct,
             }
             
         except Exception as e:
             print(f"Erro geral na sincronizacao: {e}")
             return {"status": "error", "message": str(e)}
+    
+    def _count_recent_synced_changes(self, minutes: int = 10) -> int:
+        """Conta mudanças com status 'synced' nos últimos N minutos para relatório de sync."""
+        try:
+            from datetime import datetime, timedelta
+            limiar = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+            with sqlite3.connect(str(self.db_path)) as conn:
+                cursor = conn.cursor()
+                # Comparação lexicográfica funciona para ISO 8601
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM change_log
+                    WHERE entity_type = 'produtos' AND status = 'synced' AND created_at >= ?
+                    """,
+                    (limiar,),
+                )
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+        except Exception as e:
+            print(f"Erro ao contar mudanças sincronizadas recentes: {e}")
+            return 0
     
     async def _pull_produtos_do_servidor(self) -> int:
         """Busca produtos novos/atualizados do servidor e os integra localmente."""
@@ -965,27 +1031,22 @@ class ProdutoRepository:
                         
                         # Buscar produto existente por código
                         list_response = await client.get(f"{self.api_base}/produtos/", timeout=5.0)
-                        if list_response.status_code == 200:
-                            produtos_servidor = list_response.json()
-                            produto_existente = None
-                            for p in produtos_servidor:
-                                if p.get('codigo') == produto['codigo']:
-                                    produto_existente = p
-                                    break
-                            
-                            if produto_existente:
-                                # Atualizar produto existente
-                                update_response = await client.put(
-                                    f"{self.api_base}/produtos/{produto_existente['id']}",
+                        if list_response.status_code == 200 and produto['codigo']:
+                            servidor_lista = list_response.json()
+                            alvo = next((p for p in servidor_lista if p.get('codigo') == produto['codigo']), None)
+                            if alvo:
+                                put2 = await client.put(
+                                    f"{self.api_base}/produtos/{alvo['id']}",
                                     json=produto_data,
                                     timeout=5.0
                                 )
-                                if update_response.status_code == 200:
+                                print(f"PUT por codigo status: {put2.status_code}")
+                                if put2.status_code == 200:
                                     self._mark_produto_sincronizado(produto['id'])
                                     enviados += 1
                                     print(f"Produto {produto['nome']} atualizado no servidor")
                                 else:
-                                    print(f"Erro ao atualizar produto {produto['nome']}: {update_response.text}")
+                                    print(f"Erro ao atualizar produto {produto['nome']}: {put2.text}")
                             else:
                                 # Marcar como sincronizado mesmo se não conseguir atualizar
                                 # pois o produto já existe no servidor
@@ -1068,7 +1129,7 @@ class ProdutoRepository:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT id, codigo, nome, descricao, preco_custo, preco_venda, 
-                       categoria_id, fornecedor_id, estoque_atual, estoque_minimo, 
+                       categoria_id, fornecedor_id, estoque, estoque_minimo, 
                        uuid, synced, created_at, updated_at
                 FROM produtos 
                 WHERE uuid = ?
@@ -1085,7 +1146,7 @@ class ProdutoRepository:
                 cursor.execute("""
                     INSERT INTO produtos (
                         codigo, nome, descricao, preco_custo, preco_venda,
-                        categoria_id, fornecedor_id, estoque_atual, estoque_minimo,
+                        categoria_id, fornecedor_id, estoque, estoque_minimo,
                         uuid, synced, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """, (
@@ -1096,7 +1157,7 @@ class ProdutoRepository:
                     produto_servidor['preco_venda'],
                     produto_servidor.get('categoria_id'),
                     produto_servidor.get('fornecedor_id'),
-                    produto_servidor.get('estoque_atual', 0),
+                    produto_servidor.get('estoque', produto_servidor.get('estoque_atual', 0)),
                     produto_servidor.get('estoque_minimo', 0),
                     produto_servidor['uuid'],
                     produto_servidor.get('created_at'),
@@ -1144,7 +1205,7 @@ class ProdutoRepository:
                 cursor.execute("""
                     UPDATE produtos SET
                         codigo = ?, nome = ?, descricao = ?, preco_custo = ?, preco_venda = ?,
-                        categoria_id = ?, fornecedor_id = ?, estoque_atual = ?, estoque_minimo = ?,
+                        categoria_id = ?, fornecedor_id = ?, estoque = ?, estoque_minimo = ?,
                         synced = 1, updated_at = ?
                     WHERE id = ?
                 """, (
@@ -1155,7 +1216,7 @@ class ProdutoRepository:
                     produto_servidor['preco_venda'],
                     produto_servidor.get('categoria_id'),
                     produto_servidor.get('fornecedor_id'),
-                    produto_servidor.get('estoque_atual', 0),
+                    produto_servidor.get('estoque', produto_servidor.get('estoque_atual', 0)),
                     produto_servidor.get('estoque_minimo', 0),
                     produto_servidor.get('updated_at'),
                     produto_id
