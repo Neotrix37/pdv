@@ -591,11 +591,12 @@ class UsuarioRepository:
                             data = json.loads(ch['data_json']) if ch.get('data_json') else {}
                             entity_uuid = ch['entity_id']
                             if op == 'CREATE':
-                                # Sanitizar: não enviar senha hasheada
+                                # Sanitizar: não enviar senha hasheada, mas garantir que senha existe
                                 payload = dict(data)
                                 s = str(payload.get('senha','') or '')
                                 if s.startswith('pbkdf2:') or s.startswith('scrypt:') or s.startswith('$2'):
-                                    payload.pop('senha', None)
+                                    # Se senha está hasheada, usar uma senha padrão temporária
+                                    payload['senha'] = '1234'  # Backend vai hashear novamente
                                 resp = await client.post(f"{self.api_base}/usuarios/", json=payload, timeout=8.0)
                                 print(f"[USUARIOS][CREATE] status: {resp.status_code}")
                                 if resp.status_code in (200, 201):
@@ -1007,6 +1008,7 @@ class UsuarioRepository:
             for u in usuarios_local:
                 try:
                     uid, nome, usuario_login, senha_hash, nivel, is_admin, ativo, salario, created_at, updated_at, uuid_local, synced_val = u
+                    usuario = usuario_login  # Fix: usar usuario_login como usuario
                     data = {
                         "id": u[0],
                         "nome": nome,
