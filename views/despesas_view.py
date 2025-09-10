@@ -127,7 +127,6 @@ class DespesasView(ft.UserControl, TranslationMixin):
             border_radius=5,
             heading_row_color=ft.colors.BLUE_50,
             heading_row_height=40,
-            data_row_height=50,
             horizontal_margin=10,
             column_spacing=20,
             divider_thickness=0.5
@@ -833,7 +832,6 @@ class DespesasView(ft.UserControl, TranslationMixin):
                 rows=[],
                 column_spacing=10,
                 heading_row_height=40,
-                data_row_height=40,
                 show_bottom_border=True,
                 border_radius=8,
                 border=ft.border.all(1, ft.colors.GREY_300),

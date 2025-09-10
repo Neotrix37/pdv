@@ -279,8 +279,7 @@ class AbastecimentoView(ft.UserControl):
             ],
             rows=[],
             column_spacing=15,  # Espaçamento adequado
-            heading_row_height=40,
-            data_row_height=50,  # Altura maior para acomodar texto de descrição
+            heading_row_height=40
         )
 
         # (preview removido)
@@ -1018,7 +1017,6 @@ class AbastecimentoView(ft.UserControl):
                 rows=[],
                 column_spacing=10,
                 heading_row_height=40,
-                data_row_height=35,
             )
             
             # Carregar dados iniciais
