@@ -383,18 +383,31 @@ class UsuarioRepository:
         """Atualiza usuário no banco local."""
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.cursor()
-            # Buscar hash atual para preservar se senha não for enviada
+            # Buscar registro atual para preencher campos ausentes e preservar hash
             try:
-                cursor.execute("SELECT senha FROM usuarios WHERE id = ?", (usuario_id,))
+                cursor.execute(
+                    """
+                    SELECT nome, usuario, senha, nivel, is_admin, salario
+                    FROM usuarios WHERE id = ?
+                    """,
+                    (usuario_id,)
+                )
                 row = cursor.fetchone()
-                current_hash = row[0] if row else ''
+                current = {
+                    'nome': row[0] if row else '',
+                    'usuario': row[1] if row else '',
+                    'senha': row[2] if row else '',
+                    'nivel': row[3] if row else 1,
+                    'is_admin': row[4] if row else 0,
+                    'salario': row[5] if row else 0.0,
+                }
             except Exception:
-                current_hash = ''
+                current = {'nome': '', 'usuario': '', 'senha': '', 'nivel': 1, 'is_admin': 0, 'salario': 0.0}
 
             # Normalizar senha: se vier em texto puro, gerar hash; se não vier, manter a atual
             raw = usuario_data.get('senha', None)
             if raw is None or raw == '':
-                senha_to_store = current_hash
+                senha_to_store = current['senha']
             else:
                 s = str(raw)
                 if s.startswith('pbkdf2:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
@@ -410,12 +423,12 @@ class UsuarioRepository:
                     updated_at = ?, synced = ?
                 WHERE id = ?
             """, (
-                usuario_data['nome'],
-                usuario_data['usuario'],
+                usuario_data.get('nome', current['nome']),
+                usuario_data.get('usuario', current['usuario']),
                 senha_to_store,
-                usuario_data.get('nivel', 1),
-                usuario_data.get('is_admin', 0),
-                usuario_data.get('salario', 0.0),
+                usuario_data.get('nivel', current['nivel']),
+                usuario_data.get('is_admin', current['is_admin']),
+                usuario_data.get('salario', current['salario']),
                 datetime.now().isoformat(),
                 usuario_data.get('synced', 0),
                 usuario_id
