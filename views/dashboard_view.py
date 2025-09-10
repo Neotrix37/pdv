@@ -2139,6 +2139,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 print("Valores atualizados do banco de dados")
             
             # Recriar os Text objects com novos valores
+            print(f"🔧 Recriando Text objects - Dia: MT {total_vendas_dia:.2f}, Mês: MT {total_vendas_mes:.2f}")
             self.vendas_mes = ft.Text(
                 value=f"MT {total_vendas_mes:.2f}",
                 size=20,
