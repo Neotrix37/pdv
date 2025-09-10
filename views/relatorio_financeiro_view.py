@@ -656,7 +656,6 @@ class RelatorioFinanceiroView(ft.UserControl):
                                 border_radius=5,
                                 heading_row_color=ft.colors.BLUE_50,
                                 heading_text_style=ft.TextStyle(weight=ft.FontWeight.BOLD),
-                                data_row_height=40,
                                 horizontal_margin=10,
                                 column_spacing=20,
                                 show_bottom_border=True,
