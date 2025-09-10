@@ -1857,7 +1857,18 @@ class PDVView(ft.UserControl):
                 """, (item['id'],))
                 
                 if not produto:
-                    raise ValueError(f"Produto {item['nome']} não encontrado")
+                    # Produto não encontrado no banco local, usar dados do cache (modo web)
+                    if hasattr(self, '_produtos_cache'):
+                        produto_cache = next((p for p in self._produtos_cache if p['id'] == item['id']), None)
+                        if produto_cache:
+                            produto = {
+                                'estoque': produto_cache.get('estoque', 0),
+                                'venda_por_peso': produto_cache.get('venda_por_peso', 0)
+                            }
+                        else:
+                            raise ValueError(f"Produto {item['nome']} não encontrado")
+                    else:
+                        raise ValueError(f"Produto {item['nome']} não encontrado")
                     
                 if produto['venda_por_peso'] == 1:
                     # Para produtos vendidos por peso
@@ -1892,7 +1903,17 @@ class PDVView(ft.UserControl):
                 """, (item['id'],))
                 
                 if not produto:
-                    raise ValueError(f"Produto {item['nome']} não encontrado")
+                    # Produto não encontrado no banco local, usar dados do cache (modo web)
+                    if hasattr(self, '_produtos_cache'):
+                        produto_cache = next((p for p in self._produtos_cache if p['id'] == item['id']), None)
+                        if produto_cache:
+                            produto = {
+                                'preco_custo': produto_cache.get('preco_custo', 0)
+                            }
+                        else:
+                            raise ValueError(f"Produto {item['nome']} não encontrado")
+                    else:
+                        raise ValueError(f"Produto {item['nome']} não encontrado")
                 
                 # Inserir item
                 item_data = {
