@@ -919,11 +919,14 @@ class DividasView(ft.UserControl, TranslationMixin):
                     item.get('peso_kg', 0)
                 ))
                 
-                # Atualiza o estoque do produto
-                self.db.execute(
-                    "UPDATE produtos SET estoque = estoque - ? WHERE id = ?",
-                    (item['quantidade'], item['produto_id'])
-                )
+                # Atualiza o estoque do produto e marca para sincronização
+                self.db.execute("""
+                    UPDATE produtos 
+                    SET estoque = estoque - ?,
+                        updated_at = CURRENT_TIMESTAMP,
+                        synced = 0
+                    WHERE id = ?
+                """, (item['quantidade'], item['produto_id']))
                 
                 # Verificar estoque após a atualização
                 estoque_depois = self.db.fetchone("""

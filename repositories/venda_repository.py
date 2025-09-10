@@ -541,7 +541,7 @@ class VendaRepository:
                     try:
                         # Buscar itens da venda
                         cursor.execute("""
-                            SELECT produto_id, quantidade, preco_unitario, subtotal
+                            SELECT produto_id, quantidade, preco_unitario, subtotal, COALESCE(peso_kg, 0) as peso_kg
                             FROM itens_venda 
                             WHERE venda_id = ?
                         """, (venda[0],))
@@ -596,8 +596,8 @@ class VendaRepository:
                             # Backend espera quantidade inteira; se houver fração, envia em peso_kg
                             qtd_raw = float(item[1])
                             qtd_int = int(qtd_raw)
-                            peso_kg = 0.0
-                            if abs(qtd_raw - qtd_int) > 1e-6:
+                            peso_kg = float(item[4]) if len(item) > 4 else 0.0  # Usar peso_kg da tabela
+                            if abs(qtd_raw - qtd_int) > 1e-6 and peso_kg == 0.0:
                                 peso_kg = round(qtd_raw - qtd_int, 3)
 
                             # Backend exige quantidade > 0
@@ -610,6 +610,7 @@ class VendaRepository:
                                 "preco_unitario": float(item[2]),
                                 "subtotal": float(item[3])
                             }
+                            # Incluir peso_kg para vendas por peso
                             if peso_kg > 0:
                                 item_payload["peso_kg"] = peso_kg
 

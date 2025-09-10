@@ -429,10 +429,12 @@ class CongeladorVendasView(ft.UserControl, TranslationMixin):
                 peso
             ))
             
-            # Atualizar estoque
+            # Atualizar estoque e marcar para sincronização
             cursor.execute("""
                 UPDATE produtos 
-                SET estoque = estoque - ?
+                SET estoque = estoque - ?,
+                    updated_at = CURRENT_TIMESTAMP,
+                    synced = 0
                 WHERE id = ?
             """, (peso, self.produto_selecionado['id']))
             

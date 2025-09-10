@@ -676,18 +676,18 @@ class ProdutoRepository:
             return {"status": "offline", "message": "Backend offline"}
         
         try:
-            # FASE 1: PULL - Buscar dados novos/atualizados do servidor
-            print("FASE 1: Buscando dados do servidor...")
-            produtos_recebidos = await self._pull_produtos_do_servidor()
-            
-            # FASE 2: PUSH - Enviar produtos antigos não sincronizados
-            print("FASE 2: Enviando produtos antigos...")
+            # FASE 1: PUSH - Enviar produtos antigos não sincronizados PRIMEIRO
+            print("FASE 1: Enviando produtos antigos...")
             produtos_antigos_enviados = await self._sincronizar_produtos_antigos()
             
-            # FASE 3: PUSH - Enviar mudanças pendentes
-            print("FASE 3: Enviando mudancas pendentes...")
+            # FASE 2: PUSH - Enviar mudanças pendentes ANTES do PULL
+            print("FASE 2: Enviando mudancas pendentes...")
             mudancas = await self.obter_mudancas_pendentes()
             print(f"Encontradas {len(mudancas)} mudancas pendentes")
+            
+            # FASE 3: PULL - Buscar dados novos/atualizados do servidor POR ÚLTIMO
+            print("FASE 3: Buscando dados do servidor...")
+            produtos_recebidos = await self._pull_produtos_do_servidor()
             
             if len(mudancas) == 0 and produtos_antigos_enviados == 0 and produtos_recebidos == 0:
                 print("Nenhuma sincronizacao necessaria")
@@ -967,15 +967,19 @@ class ProdutoRepository:
                     ORDER BY created_at
                 """)
             else:
-                # Se servidor tem dados, sincronizar apenas não sincronizados
+                # Se servidor tem dados, sincronizar produtos não sincronizados OU com estoque alterado
                 cursor.execute("""
-                    SELECT id, codigo, nome, descricao, preco_custo, preco_venda, 
-                           estoque, estoque_minimo, categoria_id, venda_por_peso,
-                           unidade_medida, ativo, created_at, updated_at,
-                           COALESCE(uuid, '') as uuid, COALESCE(synced, 0) as synced
-                    FROM produtos 
-                    WHERE ativo = 1 AND (synced = 0 OR synced IS NULL)
-                    ORDER BY created_at
+                    SELECT p.id, p.codigo, p.nome, p.descricao, p.preco_custo, p.preco_venda, 
+                           p.estoque, p.estoque_minimo, p.categoria_id, p.venda_por_peso,
+                           p.unidade_medida, p.ativo, p.created_at, p.updated_at,
+                           COALESCE(p.uuid, '') as uuid, COALESCE(p.synced, 0) as synced,
+                           COALESCE(p.estoque_servidor, p.estoque) as estoque_servidor
+                    FROM produtos p
+                    WHERE p.ativo = 1 AND (
+                        p.synced = 0 OR p.synced IS NULL OR 
+                        p.estoque != COALESCE(p.estoque_servidor, p.estoque)
+                    )
+                    ORDER BY p.created_at
                 """)
             
             produtos_nao_sincronizados = [dict(row) for row in cursor.fetchall()]
@@ -1024,8 +1028,10 @@ class ProdutoRepository:
                         self._mark_produto_sincronizado(produto['id'])
                         enviados += 1
                         print(f"Produto {produto['nome']} sincronizado")
-                    elif (response.status_code == 400 and "duplicate key" in response.text.lower()) or \
-                         (response.status_code == 500 and "duplicate key" in response.text.lower()):
+                    elif response.status_code == 409 or \
+                         (response.status_code == 400 and "duplicate key" in response.text.lower()) or \
+                         (response.status_code == 500 and "duplicate key" in response.text.lower()) or \
+                         (response.status_code == 409 and "já existe" in response.text.lower()):
                         # Produto já existe, buscar e atualizar
                         print(f"Produto {produto['nome']} ja existe, tentando atualizar...")
                         
@@ -1053,6 +1059,11 @@ class ProdutoRepository:
                                 self._mark_produto_sincronizado(produto['id'])
                                 enviados += 1
                                 print(f"Produto {produto['nome']} ja existe no servidor, marcado como sincronizado")
+                        else:
+                            # Se não conseguir buscar lista ou produto sem código, marcar como sincronizado
+                            self._mark_produto_sincronizado(produto['id'])
+                            enviados += 1
+                            print(f"Produto {produto['nome']} ja existe no servidor (409), marcado como sincronizado")
                     else:
                         print(f"Erro ao enviar produto {produto['nome']}: {response.status_code} - {response.text}")
                         
@@ -1082,10 +1093,10 @@ class ProdutoRepository:
                     print(f"Produto ID {produto_id} nao encontrado")
                     return
                 
-                # Atualizar produto
+                # Atualizar produto e salvar estoque atual como estoque_servidor
                 cursor.execute("""
                     UPDATE produtos 
-                    SET synced = 1, updated_at = ?
+                    SET synced = 1, updated_at = ?, estoque_servidor = estoque
                     WHERE id = ?
                 """, (datetime.now().isoformat(), produto_id))
                 
@@ -1204,9 +1215,18 @@ class ProdutoRepository:
                 cursor = conn.cursor()
                 cursor.execute("""
                     UPDATE produtos SET
-                        codigo = ?, nome = ?, descricao = ?, preco_custo = ?, preco_venda = ?,
-                        categoria_id = ?, fornecedor_id = ?, estoque = ?, estoque_minimo = ?,
-                        synced = 1, updated_at = ?
+                        codigo = ?,
+                        nome = ?,
+                        descricao = ?,
+                        preco_custo = ?,
+                        preco_venda = ?,
+                        categoria_id = ?,
+                        fornecedor_id = ?,
+                        estoque = ?,
+                        estoque_minimo = ?,
+                        estoque_servidor = ?,
+                        synced = 1,
+                        updated_at = ?
                     WHERE id = ?
                 """, (
                     produto_servidor['codigo'],
@@ -1216,8 +1236,9 @@ class ProdutoRepository:
                     produto_servidor['preco_venda'],
                     produto_servidor.get('categoria_id'),
                     produto_servidor.get('fornecedor_id'),
-                    produto_servidor.get('estoque', produto_servidor.get('estoque_atual', 0)),
+                    produto_servidor.get('estoque', 0),
                     produto_servidor.get('estoque_minimo', 0),
+                    produto_servidor.get('estoque', 0),  # Salvar como estoque_servidor também
                     produto_servidor.get('updated_at'),
                     produto_id
                 ))

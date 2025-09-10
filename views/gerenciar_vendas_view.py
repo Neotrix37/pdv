@@ -1597,7 +1597,9 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
                 if not is_divida_quitada:
                     self.db.execute("""
                         UPDATE produtos 
-                        SET estoque = estoque - ? 
+                        SET estoque = estoque - ?,
+                            updated_at = CURRENT_TIMESTAMP,
+                            synced = 0
                         WHERE id = ?
                     """, (quantidade, item_data['produto_id']))
                 else:

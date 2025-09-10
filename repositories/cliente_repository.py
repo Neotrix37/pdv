@@ -496,6 +496,14 @@ class ClienteRepository:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Verificar se a tabela clientes existe
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='clientes'")
+            if not cursor.fetchone():
+                print("Tabela clientes não encontrada - executando migração...")
+                from utils.migration_helper import MigrationHelper
+                migration_helper = MigrationHelper()
+                migration_helper.migrate_clientes_table()
+            
             if servidor_vazio:
                 # Se servidor vazio, sincronizar TODOS os clientes locais
                 print("Servidor vazio - sincronizando TODOS os clientes locais...")

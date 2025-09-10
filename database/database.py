@@ -1017,6 +1017,19 @@ class Database:
                     self.conn.rollback()
                     print(f"Erro ao adicionar coluna unidade_medida: {e}")
 
+            # Se a coluna estoque_servidor não existir, adiciona (para rastrear estoque sincronizado)
+            if 'estoque_servidor' not in colunas_nomes:
+                try:
+                    cursor.execute("""
+                        ALTER TABLE produtos
+                        ADD COLUMN estoque_servidor REAL DEFAULT NULL
+                    """)
+                    self.conn.commit()
+                    print("Coluna 'estoque_servidor' adicionada à tabela produtos")
+                except Exception as e:
+                    self.conn.rollback()
+                    print(f"Erro ao adicionar coluna estoque_servidor: {e}")
+
             # Criar tabela de fechamentos
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS fechamentos_caixa (
@@ -2039,25 +2052,46 @@ class Database:
         try:
             cursor = self.conn.cursor()
             from datetime import datetime
+            import uuid
             data_atual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            venda_uuid = str(uuid.uuid4())
             
-            cursor.execute("""
-                INSERT INTO vendas (
-                    usuario_id,
-                    total,
-                    forma_pagamento,
-                    valor_recebido,
-                    troco,
-                    data_venda
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """, (
+            # Descobrir colunas existentes na tabela vendas
+            cursor.execute("PRAGMA table_info(vendas)")
+            cols = [row[1] for row in cursor.fetchall()]
+            
+            # Campos sempre presentes
+            fields = [
+                'usuario_id', 'total', 'forma_pagamento',
+                'valor_recebido', 'troco', 'data_venda'
+            ]
+            values = [
                 venda_data['usuario_id'],
                 venda_data['total'],
                 venda_data['forma_pagamento'],
                 venda_data['valor_recebido'],
                 venda_data['troco'],
                 data_atual
-            ))
+            ]
+            
+            # Campos opcionais conforme existência na tabela
+            if 'uuid' in cols:
+                fields.append('uuid')
+                values.append(venda_uuid)
+            if 'synced' in cols:
+                fields.append('synced')
+                values.append(0)
+            if 'created_at' in cols:
+                fields.append('created_at')
+                values.append(data_atual)
+            if 'updated_at' in cols:
+                fields.append('updated_at')
+                values.append(data_atual)
+            
+            placeholders = ', '.join(['?'] * len(fields))
+            fields_sql = ', '.join(fields)
+            sql = f"INSERT INTO vendas ({fields_sql}) VALUES ({placeholders})"
+            cursor.execute(sql, tuple(values))
             
             self.conn.commit()
             return cursor.lastrowid
@@ -3289,6 +3323,15 @@ class Database:
             # Garantir que a tabela retiradas_caixa exista
             self.garantir_tabela_retiradas_caixa()
             
+            # Executar migrações necessárias
+            try:
+                from utils.migration_helper import MigrationHelper
+                migration_helper = MigrationHelper()
+                migration_helper.migrate_clientes_table()
+                print("Migração de clientes executada com sucesso")
+            except Exception as e:
+                print(f"Erro durante migração de clientes: {e}")
+            
             self.conn.commit()
             return True
             
@@ -3434,6 +3477,15 @@ class Database:
                 
             except Exception as e:
                 print(f"Erro ao verificar/criar tabela despesas_recorrentes: {e}")
+            
+            # Executar migrações necessárias
+            try:
+                from utils.migration_helper import MigrationHelper
+                migration_helper = MigrationHelper()
+                migration_helper.migrate_clientes_table()
+                print("Migração de clientes executada com sucesso")
+            except Exception as e:
+                print(f"Erro durante migração de clientes: {e}")
             
             # Commit das alterações
             self.conn.commit()

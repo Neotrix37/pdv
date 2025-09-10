@@ -106,7 +106,24 @@ class MigrationHelper:
             # Verificar se a tabela existe
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='clientes'")
             if not cursor.fetchone():
-                print("[MIGRATION] Tabela 'clientes' não encontrada, pulando migração")
+                print("[MIGRATION] Tabela 'clientes' não encontrada, criando...")
+                # Criar tabela clientes se não existir
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS clientes (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nome TEXT NOT NULL,
+                        telefone TEXT,
+                        endereco TEXT,
+                        email TEXT,
+                        ativo INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        uuid TEXT,
+                        synced INTEGER DEFAULT 0
+                    )
+                """)
+                conn.commit()
+                print("[MIGRATION] Tabela 'clientes' criada com sucesso")
                 return
             
             # Verificar colunas existentes

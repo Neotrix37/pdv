@@ -1595,22 +1595,15 @@ class PDVView(ft.UserControl):
             self.db.conn.execute("BEGIN TRANSACTION")
             
             try:
-                # Inserir venda
-                cursor = self.db.conn.cursor()
-                cursor.execute("""
-                    INSERT INTO vendas (
-                        usuario_id, total, forma_pagamento,
-                        valor_recebido, troco, data_venda
-                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """, (
-                    self.usuario['id'],
-                    self.total_venda,
-                    self.forma_pagamento.value,
-                    float(self.valor_recebido_field.value or 0),
-                    float(self.valor_recebido_field.value or 0) - self.total_venda
-                ))
-                
-                venda_id = cursor.lastrowid
+                # Inserir venda usando helper que cria UUID e marca synced=0
+                venda_data = {
+                    'usuario_id': self.usuario['id'],
+                    'total': self.total_venda,
+                    'forma_pagamento': self.forma_pagamento.value,
+                    'valor_recebido': float(self.valor_recebido_field.value or 0),
+                    'troco': float(self.valor_recebido_field.value or 0) - self.total_venda
+                }
+                venda_id = self.db.insert_venda(venda_data)
                 
                 # Inserir itens e atualizar estoque
                 for item in self.itens:
@@ -1620,6 +1613,7 @@ class PDVView(ft.UserControl):
                     """, (item['id'],))
                     
                     # Inserir item
+                    cursor = self.db.conn.cursor()
                     cursor.execute("""
                         INSERT INTO itens_venda (
                             venda_id, produto_id, quantidade,
@@ -1635,11 +1629,12 @@ class PDVView(ft.UserControl):
                         item['subtotal']
                     ))
                     
-                    # Atualizar estoque
+                    # Atualizar estoque e marcar para sincronização
                     cursor.execute("""
                         UPDATE produtos 
                         SET estoque = estoque - ?,
-                            updated_at = CURRENT_TIMESTAMP
+                            updated_at = CURRENT_TIMESTAMP,
+                            synced = 0
                         WHERE id = ?
                     """, (item['quantidade'], item['id']))
                 
@@ -1925,11 +1920,12 @@ class PDVView(ft.UserControl):
                 }
                 self.db.insert_item_venda(item_data)
                 
-                # Atualizar estoque
+                # Atualizar estoque e marcar para sincronização
                 self.db.execute("""
                     UPDATE produtos 
                     SET estoque = estoque - ?,
-                        updated_at = CURRENT_TIMESTAMP
+                        updated_at = CURRENT_TIMESTAMP,
+                        synced = 0
                     WHERE id = ?
                 """, (item['quantidade'], item['id']))
             

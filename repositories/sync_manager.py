@@ -66,10 +66,15 @@ class SyncManager:
         """Verificação automática de recuperação de backup na inicialização."""
         try:
             print("Verificando integridade do banco após possível restauração de backup...")
-            recovery_needed = self.backup_recovery.quick_check_and_fix()
+            # DESABILITADO: Sistema de backup estava restaurando dados antigos e resetando estoque
+            # recovery_needed = self.backup_recovery.quick_check_and_fix()
             
-            if recovery_needed:
-                print("OK: Recuperacao de backup concluida com sucesso")
+            # Apenas detectar problemas sem corrigir automaticamente
+            issues = self.backup_recovery.detect_backup_restoration()
+            
+            if issues['needs_recovery']:
+                print("AVISO: Problemas detectados no banco, mas recuperação automática desabilitada")
+                print("Execute manualmente se necessário: python database/backup_recovery.py")
             else:
                 print("OK: Banco de dados integro")
                 
