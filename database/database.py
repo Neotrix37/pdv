@@ -181,6 +181,7 @@ class Database:
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS clientes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE,
                 nome TEXT NOT NULL,
                 nuit TEXT,
                 telefone TEXT,
@@ -188,11 +189,33 @@ class Database:
                 endereco TEXT,
                 especial INTEGER DEFAULT 0,
                 desconto_divida REAL DEFAULT 0,
+                synced INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             ''')
             self.conn.commit()
+            
+            # Adicionar colunas de sincronização se não existirem
+            try:
+                cursor.execute('ALTER TABLE clientes ADD COLUMN uuid TEXT UNIQUE')
+                self.conn.commit()
+                print("Coluna 'uuid' adicionada à tabela clientes")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    pass  # Coluna já existe
+                else:
+                    print(f"Erro ao adicionar coluna uuid: {e}")
+            
+            try:
+                cursor.execute('ALTER TABLE clientes ADD COLUMN synced INTEGER DEFAULT 0')
+                self.conn.commit()
+                print("Coluna 'synced' adicionada à tabela clientes")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    pass  # Coluna já existe
+                else:
+                    print(f"Erro ao adicionar coluna synced: {e}")
 
             # Verificar se a coluna salario existe na tabela usuarios
             cursor.execute("PRAGMA table_info(usuarios)")

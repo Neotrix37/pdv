@@ -2024,9 +2024,22 @@ class PDVView(ft.UserControl):
         try:
             item = e.control.data
             # Verificar estoque disponível
-            estoque_atual = self.db.fetchone("""
+            produto_db = self.db.fetchone("""
                 SELECT estoque FROM produtos WHERE id = ?
-            """, (item['id'],))['estoque']
+            """, (item['id'],))
+            
+            if not produto_db:
+                # Produto não encontrado no banco local, usar estoque do cache
+                if hasattr(self, '_produtos_cache'):
+                    produto_cache = next((p for p in self._produtos_cache if p['id'] == item['id']), None)
+                    if produto_cache:
+                        estoque_atual = produto_cache.get('estoque', 0)
+                    else:
+                        estoque_atual = 0
+                else:
+                    estoque_atual = 0
+            else:
+                estoque_atual = produto_db['estoque']
             
             # Calcular quantidade total no carrinho
             qtd_carrinho = sum(
@@ -2235,9 +2248,22 @@ class PDVView(ft.UserControl):
                             return
                             
                         # Verificar estoque
-                        estoque_atual = self.db.fetchone("""
+                        produto_db = self.db.fetchone("""
                             SELECT estoque FROM produtos WHERE id = ?
-                        """, (item['id'],))['estoque']
+                        """, (item['id'],))
+                        
+                        if not produto_db:
+                            # Produto não encontrado no banco local, usar estoque do cache
+                            if hasattr(self, '_produtos_cache'):
+                                produto_cache = next((p for p in self._produtos_cache if p['id'] == item['id']), None)
+                                if produto_cache:
+                                    estoque_atual = produto_cache.get('estoque', 0)
+                                else:
+                                    estoque_atual = 0
+                            else:
+                                estoque_atual = 0
+                        else:
+                            estoque_atual = produto_db['estoque']
                         
                         if novo_peso > estoque_atual:
                             self.mostrar_erro(f"Estoque insuficiente! Disponível: {estoque_atual:.3f} KG")
@@ -2252,9 +2278,22 @@ class PDVView(ft.UserControl):
                             return
                             
                         # Verificar estoque
-                        estoque_atual = self.db.fetchone("""
+                        produto_db = self.db.fetchone("""
                             SELECT estoque FROM produtos WHERE id = ?
-                        """, (item['id'],))['estoque']
+                        """, (item['id'],))
+                        
+                        if not produto_db:
+                            # Produto não encontrado no banco local, usar estoque do cache
+                            if hasattr(self, '_produtos_cache'):
+                                produto_cache = next((p for p in self._produtos_cache if p['id'] == item['id']), None)
+                                if produto_cache:
+                                    estoque_atual = produto_cache.get('estoque', 0)
+                                else:
+                                    estoque_atual = 0
+                            else:
+                                estoque_atual = 0
+                        else:
+                            estoque_atual = produto_db['estoque']
                         
                         if nova_qtd > estoque_atual:
                             self.mostrar_erro(f"Estoque insuficiente! Disponível: {estoque_atual}")
