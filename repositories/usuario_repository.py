@@ -546,57 +546,198 @@ class UsuarioRepository:
                 "message": "Backend offline - operando localmente",
                 "enviadas": 0,
                 "recebidas": 0,
-                "mudancas_pendentes": 0
-            }
-        
+
+def _log_change(self, entity_id: str, operation: str, data: Dict[Any, Any]):
+    """Registra mudança no change_log para sincronização posterior."""
+    with sqlite3.connect(str(self.db_path)) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO change_log (entity_type, entity_id, operation, data_json, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            'usuarios',
+            entity_id,
+            operation,
+            json.dumps(data),
+            datetime.now().isoformat(),
+            'pending'
+        ))
+        conn.commit()
+
+def _ensure_change_log_table(self):
+    """Garante que a tabela change_log existe."""
+    with sqlite3.connect(str(self.db_path)) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS change_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                data_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                status TEXT DEFAULT 'pending'
+            )
+        """)
+        conn.commit()
+
+async def sincronizar_mudancas(self) -> Dict[str, Any]:
+    """Sincroniza mudanças bidirecionalmente com o servidor."""
+    print("=== INICIANDO SINCRONIZACAO BIDIRECIONAL DE USUARIOS ===")
+    
+    # Verificar conectividade
+    if not await self.is_backend_online():
+        return {
+            "status": "offline",
+            "message": "Backend offline - operando localmente",
+            "enviadas": 0,
+            "recebidas": 0,
+            "mudancas_pendentes": 0
+        }
+    
+    try:
+        # Heurística de primeira sincronização: se houver usuários locais pendentes, priorizar PUSH primeiro
+        usuarios_recebidos = 0
+        usuarios_antigos_enviados = 0
         try:
-            # Heurística de primeira sincronização: se houver usuários locais pendentes, priorizar PUSH primeiro
-            usuarios_recebidos = 0
-            usuarios_antigos_enviados = 0
-            try:
-                with sqlite3.connect(str(self.db_path)) as conn:
-                    cur = conn.cursor()
-                    cur.execute("""
-                        SELECT COUNT(*) FROM usuarios 
-                        WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND TRIM(uuid) <> '' AND ativo = 1
-                    """)
-                    pendentes = cur.fetchone()[0]
-            except Exception:
-                pendentes = 0
+            with sqlite3.connect(str(self.db_path)) as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT COUNT(*) FROM usuarios 
+                    WHERE (synced = 0 OR synced IS NULL) AND uuid IS NOT NULL AND TRIM(uuid) <> '' AND ativo = 1
+                """)
+                pendentes = cur.fetchone()[0]
+        except Exception:
+            pendentes = 0
 
-            if pendentes > 0:
-                # PUSH primeiro
-                usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
-                # Depois PULL para convergir
-                usuarios_recebidos = await self._pull_usuarios_do_servidor()
-            else:
-                # Ordem normal
-                usuarios_recebidos = await self._pull_usuarios_do_servidor()
-                usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
-            
-            # FASE 3: Push - enviar mudanças pendentes
-            mudancas = await self._obter_mudancas_pendentes()
-            mudancas_enviadas = 0
+        if pendentes > 0:
+            # PUSH primeiro
+            usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
+            # Depois PULL para convergir
+            usuarios_recebidos = await self._pull_usuarios_do_servidor()
+        else:
+            # Ordem normal
+            usuarios_recebidos = await self._pull_usuarios_do_servidor()
+            usuarios_antigos_enviados = await self._sincronizar_usuarios_antigos()
+        
+        # FASE 3: Push - enviar mudanças pendentes
+        mudancas = await self._obter_mudancas_pendentes()
+        mudancas_enviadas = 0
 
-            print(f"FASE 3: Enviando mudancas pendentes de usuarios...")
-            print(f"Encontradas {len(mudancas)} mudancas pendentes de usuarios")
+        print(f"FASE 3: Enviando mudancas pendentes de usuarios...")
+        print(f"Encontradas {len(mudancas)} mudancas pendentes de usuarios")
 
-            if len(mudancas) == 0:
-                print("Nenhuma sincronizacao necessaria para usuarios")
-            else:
-                async with httpx.AsyncClient() as client:
-                    for ch in mudancas:
-                        try:
-                            op = ch['operation']
-                            data = json.loads(ch['data_json']) if ch.get('data_json') else {}
+        if len(mudancas) == 0:
+            print("Nenhuma sincronizacao necessaria para usuarios")
+        else:
+            async with httpx.AsyncClient() as client:
+                for ch in mudancas:
+                    try:
+                        op = ch['operation']
+                        data = json.loads(ch['data_json']) if ch.get('data_json') else {}
+                        entity_uuid = ch['entity_id']
+                        if op == 'CREATE':
+                            resp = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=8.0)
+                            print(f"[USUARIOS][CREATE] status: {resp.status_code}")
+                            if resp.status_code in (200, 201):
+                                self._mark_change_synced(ch['id'])
+                                mudancas_enviadas += 1
+                            elif (
+                                (resp.status_code in (400, 409)) or
+                                (resp.status_code == 500)
+                            ) and (
+                                'Nome de usuário já existe' in (resp.text or '') or
+                                'username' in (resp.text or '').lower() and 'existe' in (resp.text or '').lower() or
+                                'already exists' in (resp.text or '').lower()
+                            ):
+                                # Resolver conflito: procurar usuário por username no servidor e vincular localmente
+                                try:
+                                    username = (data.get('usuario') or '').strip()
+                                    srv_user = None
+                                    # Tentar endpoint com filtro; se não houver, buscar lista completa e filtrar
+                                    get_resp = await client.get(f"{self.api_base}/usuarios/", timeout=8.0)
+                                    if get_resp.status_code == 200:
+                                        lst = get_resp.json() or []
+                                        for u in lst:
+                                            if str(u.get('usuario', '')).lower() == username.lower():
+                                                srv_user = u
+                                                break
+                                    if srv_user:
+                                        # Atualizar local: set uuid, synced=1, permissões
+                                        with sqlite3.connect(str(self.db_path)) as conn:
+                                            cur = conn.cursor()
+                                            # Localizar registro local pelo UUID do change_log
+                                            local_uuid = ch['entity_id']
+                                            cur.execute("SELECT id FROM usuarios WHERE uuid = ?", (local_uuid,))
+                                            r = cur.fetchone()
+                                            if r:
+                                                uid = r[0]
+                                                pode_abastecer = 1 if srv_user.get('pode_abastecer', False) else 0
+                                                pode_despesas = 1 if srv_user.get('pode_gerenciar_despesas', False) else 0
+                                                cur.execute(
+                                                    """
+                                                    UPDATE usuarios
+                                                    SET uuid = ?, synced = 1, is_admin = ?,
+                                                        pode_abastecer = ?, pode_gerenciar_despesas = ?,
+                                                        nome = COALESCE(?, nome), usuario = COALESCE(?, usuario),
+                                                        nivel = COALESCE(?, nivel), ativo = COALESCE(?, ativo),
+                                                        updated_at = ?
+                                                    WHERE id = ?
+                                                    """,
+                                                    (
+                                                        srv_user.get('uuid') or local_uuid,
+                                                        1 if srv_user.get('is_admin', 0) else 0,
+                                                        pode_abastecer,
+                                                        pode_despesas,
+                                                        srv_user.get('nome'),
+                                                        srv_user.get('usuario'),
+                                                        srv_user.get('nivel', 1),
+                                                        srv_user.get('ativo', 1),
+                                                        datetime.now().isoformat(),
+                                                        uid,
+                                                    )
+                                                )
+                                                conn.commit()
+                                                self._mark_change_synced(ch['id'])
+                                                mudancas_enviadas += 1
+                                            else:
+                                                # Caso raro: não encontrou por uuid local; tentar por username
+                                                cur.execute("SELECT id FROM usuarios WHERE LOWER(usuario)=LOWER(?)", (username,))
+                                                r2 = cur.fetchone()
+                                                if r2:
+                                                    uid = r2[0]
+                                                    cur.execute(
+                                                        """
+                                                        UPDATE usuarios
+                                                        SET uuid = ?, synced = 1, updated_at = ?
+                                                        WHERE id = ?
+                                                        """,
+                                                        (srv_user.get('uuid') or local_uuid, datetime.now().isoformat(), uid)
+                                                    )
+                                                    conn.commit()
+                                                    self._mark_change_synced(ch['id'])
+                                                    mudancas_enviadas += 1
+                                except Exception as ex:
+                                    print(f"[USUARIOS][CREATE] Falha ao resolver conflito por username: {ex}")
+                            else:
+                                print(f"[USUARIOS][CREATE] erro: {resp.text}")
+                        elif op == 'UPDATE':
+                            # Tentar update por UUID; se 404, tentar CREATE
                             entity_uuid = ch['entity_id']
-                            if op == 'CREATE':
-                                resp = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=8.0)
-                                print(f"[USUARIOS][CREATE] status: {resp.status_code}")
-                                if resp.status_code in (200, 201):
+                            resp = await client.put(f"{self.api_base}/usuarios/{entity_uuid}", json=data, timeout=8.0)
+                            print(f"[USUARIOS][UPDATE] status: {resp.status_code}")
+                            if resp.status_code == 200:
+                                self._mark_change_synced(ch['id'])
+                                mudancas_enviadas += 1
+                            elif resp.status_code == 404:
+                                # Tentar CREATE se não existir no servidor
+                                post = await client.post(f"{self.api_base}/usuarios/", json=data, timeout=8.0)
+                                print(f"[USUARIOS][UPDATE->CREATE] status: {post.status_code}")
+                                if post.status_code in (200, 201):
                                     self._mark_change_synced(ch['id'])
                                     mudancas_enviadas += 1
-                                elif resp.status_code == 409 or (resp.status_code == 500 and 'duplicate key value' in (resp.text or '').lower()):
+                                elif post.status_code == 409 or (post.status_code == 500 and 'duplicate key value' in (post.text or '').lower()):
                                     # Já existe no servidor: marcar como sincronizada
                                     self._mark_change_synced(ch['id'])
                                     mudancas_enviadas += 1
