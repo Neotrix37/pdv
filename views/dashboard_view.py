@@ -7,7 +7,7 @@ from utils.translation_mixin import TranslationMixin
 from repositories.sync_manager import SyncManager
 from utils.status_indicator import StatusIndicator
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import os
 import httpx
 
@@ -1449,10 +1449,20 @@ class DashboardView(ft.UserControl, TranslationMixin):
             lucro_mes = 0.0
             lucro_dia = 0.0
         else:
-            # Usar os novos métodos que consideram os saques
+            # Tentar buscar vendas locais primeiro
             total_vendas_mes = self.db.get_vendas_disponiveis_mes()  # Vendas menos saques
             total_vendas_dia = self.db.get_total_vendas_hoje()
             total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()
+            
+            # Se não há vendas locais, tentar buscar do servidor
+            if total_vendas_dia == 0.0 and total_vendas_mes == 0.0:
+                print("🌐 Sem vendas locais - buscando do servidor...")
+                vendas_servidor = self._buscar_vendas_servidor()
+                if vendas_servidor:
+                    total_vendas_dia = vendas_servidor.get('vendas_dia', 0.0)
+                    total_vendas_mes = vendas_servidor.get('vendas_mes', 0.0)
+                    print(f"📊 Vendas do servidor - Dia: MT {total_vendas_dia:.2f}, Mês: MT {total_vendas_mes:.2f}")
+            
             valor_estoque = self.db.get_valor_estoque()
             valor_potencial = self.db.get_valor_venda_estoque()
             
@@ -1519,7 +1529,87 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 if hasattr(self, 'page') and self.page:
                     self.page.update()
             except Exception as e2:
-                print(f"Erro ao atualizar página: {e2}")
+                print("=== Fim did_mount() ===")
+
+    def _buscar_vendas_servidor(self) -> Optional[Dict[str, float]]:
+        """Busca vendas do servidor quando não há vendas locais"""
+        try:
+            import httpx
+            from datetime import datetime
+            import json
+            import os
+            
+            # Obter URL do backend
+            backend_url = self._get_backend_url()
+            
+            print(f"🔗 Tentando buscar vendas do servidor: {backend_url}")
+            
+            with httpx.Client(timeout=10.0) as client:
+                # Buscar todas as vendas do servidor
+                response = client.get(f"{backend_url}/api/vendas/")
+                
+                if response.status_code == 200:
+                    vendas = response.json()
+                    print(f"📥 Recebidas {len(vendas)} vendas do servidor")
+                    
+                    # Calcular vendas do dia e mês
+                    hoje = datetime.now().date()
+                    mes_atual = hoje.strftime('%Y-%m')
+                    
+                    vendas_dia = 0.0
+                    vendas_mes = 0.0
+                    
+                    for venda in vendas:
+                        try:
+                            # Parse da data da venda
+                            data_venda_str = venda.get('data_venda', '')
+                            if 'T' in data_venda_str:
+                                data_venda = datetime.fromisoformat(data_venda_str.replace('Z', '+00:00')).date()
+                            else:
+                                data_venda = datetime.strptime(data_venda_str[:10], '%Y-%m-%d').date()
+                            
+                            total = float(venda.get('total', 0))
+                            status = venda.get('status', '')
+                            
+                            # Ignorar vendas anuladas
+                            if status == 'Anulada':
+                                continue
+                            
+                            # Vendas do mês
+                            if data_venda.strftime('%Y-%m') == mes_atual:
+                                vendas_mes += total
+                                
+                                # Vendas do dia
+                                if data_venda == hoje:
+                                    vendas_dia += total
+                                    
+                        except Exception as e:
+                            print(f"⚠️ Erro ao processar venda {venda.get('id', 'N/A')}: {e}")
+                            continue
+                    
+                    return {
+                        'vendas_dia': vendas_dia,
+                        'vendas_mes': vendas_mes
+                    }
+                else:
+                    print(f"❌ Erro ao buscar vendas: {response.status_code}")
+                    return None
+                    
+        except Exception as e:
+            print(f"❌ Erro ao conectar com servidor: {e}")
+            return None
+    
+    def _get_backend_url(self) -> str:
+        """Obtém a URL do backend do arquivo de configuração"""
+        try:
+            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get('server_url', 'https://prototipo-production-c729.up.railway.app')
+        except Exception:
+            pass
+        return os.getenv("BACKEND_URL", "https://prototipo-production-c729.up.railway.app")
 
     def get_low_stock_products(self, limit: int = None) -> List[Dict[str, Any]]:
         """Retorna a lista de produtos com estoque baixo"""
