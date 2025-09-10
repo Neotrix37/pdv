@@ -1561,18 +1561,24 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     
                     for venda in vendas:
                         try:
-                            # Parse da data da venda
-                            data_venda_str = venda.get('data_venda', '')
+                            # Parse da data da venda - usar created_at se data_venda não existir
+                            data_venda_str = venda.get('data_venda', '') or venda.get('created_at', '')
+                            
+                            if not data_venda_str:
+                                print(f"⚠️ Venda {venda.get('id', 'N/A')} sem data - pulando")
+                                continue
+                            
+                            # Processar data ISO format (created_at) ou date format (data_venda)
                             if 'T' in data_venda_str:
                                 data_venda = datetime.fromisoformat(data_venda_str.replace('Z', '+00:00')).date()
                             else:
                                 data_venda = datetime.strptime(data_venda_str[:10], '%Y-%m-%d').date()
                             
                             total = float(venda.get('total', 0))
-                            status = venda.get('status', '')
+                            cancelada = venda.get('cancelada', False)
                             
-                            # Ignorar vendas anuladas
-                            if status == 'Anulada':
+                            # Ignorar vendas canceladas
+                            if cancelada:
                                 continue
                             
                             # Vendas do mês
