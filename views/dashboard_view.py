@@ -409,7 +409,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
             # Preferir endpoints de métricas (com fallback)
             url_dia_1 = f"{api_base}/metricas/vendas-dia"
             url_mes_1 = f"{api_base}/metricas/vendas-mes"
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=10.0) as client:
                 try:
                     print(f"[WEB] Dashboard buscando métricas em: {url_dia_1} e {url_mes_1}")
                     resp_dia = client.get(url_dia_1)
@@ -430,9 +430,9 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     url1 = f"{api_base}/vendas/"
                     url2 = f"{api_base}/vendas"
                     try:
-                        resp = client.get(url1, timeout=30.0)
+                        resp = client.get(url1)
                         if resp.status_code == 404:
-                            resp = client.get(url2, timeout=30.0)
+                            resp = client.get(url2)
                         if resp.status_code == 200:
                             vendas = resp.json() or []
                             for v in vendas:

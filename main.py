@@ -26,6 +26,19 @@ import json
 import platform
 import traceback
 import sys
+import shutil
+from pathlib import Path
+
+def resource_path(relative_path: str) -> str:
+    """Resolve path for PyInstaller (sys._MEIPASS) or source tree."""
+    try:
+        base_path = getattr(sys, '_MEIPASS', None)
+        if base_path:
+            return os.path.join(base_path, relative_path)
+        return os.path.join(os.path.dirname(__file__), relative_path)
+    except Exception:
+        return os.path.join(os.path.dirname(__file__), relative_path)
+
 
 def main(page: ft.Page):
     # Configurações globais
@@ -42,6 +55,13 @@ def main(page: ft.Page):
         page.window_full_screen = True  # Força tela cheia
         page.window_resizable = False   # Desabilita redimensionamento
         page.window_maximizable = False # Desabilita o botão de maximizar
+        # Definir ícone da janela a partir dos assets empacotados, se existir
+        try:
+            icon_path = resource_path(os.path.join('assets', 'icon.ico'))
+            if os.path.exists(icon_path):
+                page.window_icon = icon_path
+        except Exception:
+            pass
     
     # Configurações de dados do aplicativo
     if is_web:
@@ -69,8 +89,27 @@ def main(page: ft.Page):
     os.makedirs(os.path.join(app_data, "database"), exist_ok=True)
     
     # Definir caminhos de assets e uploads
-    page.assets_dir = os.path.join(app_data, "assets")
+    # Quando empacotado, a pasta assets embutida pode ser usada diretamente
+    if getattr(sys, 'frozen', False):
+        bundled_assets = resource_path('assets')
+        if os.path.exists(bundled_assets):
+            page.assets_dir = bundled_assets
+        else:
+            page.assets_dir = os.path.join(app_data, "assets")
+    else:
+        page.assets_dir = os.path.join(app_data, "assets")
     page.upload_dir = os.path.join(app_data, "uploads")
+
+    # Garantir que o banco inicial exista em app_data/database/sistema.db
+    try:
+        target_db_dir = os.path.join(app_data, "database")
+        target_db_path = os.path.join(target_db_dir, "sistema.db")
+        bundled_db_path = resource_path(os.path.join('database', 'sistema.db'))
+        if not os.path.exists(target_db_path) and os.path.exists(bundled_db_path):
+            shutil.copy2(bundled_db_path, target_db_path)
+    except Exception as _e:
+        # Apenas registra no console, não interrompe a execução
+        print(f"[STARTUP] Aviso: não foi possível copiar banco inicial: {_e}")
     
     # Inicializar banco de dados
     db = Database()

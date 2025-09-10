@@ -38,7 +38,8 @@ except Exception:
 def reset_admin(usuario: str = "admin", senha: str = "842384") -> None:
     print(f"[INFO] Banco local: {DB_PATH}")
     print(f"[INFO] Definindo/atualizando usuario='{usuario}' (admin) com senha fornecida...")
-    h = generate_password_hash(senha, method='scrypt')
+    # Usar PBKDF2 (padrão do Werkzeug) para padronização com o restante do sistema
+    h = generate_password_hash(senha)
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()

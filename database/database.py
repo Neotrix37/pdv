@@ -1636,7 +1636,7 @@ class Database:
             if hasattr(self, 'conn') and self.conn:
                 try:
                     self.conn.rollback()
-                except:
+                except Exception:
                     pass
             return False
 
@@ -1649,10 +1649,30 @@ class Database:
             result = self.fetchone("""
                 SELECT id, nome, usuario, senha, is_admin, ativo, nivel, pode_abastecer, pode_gerenciar_despesas
                 FROM usuarios 
-                WHERE usuario = ? AND ativo = 1
+                WHERE LOWER(usuario) = LOWER(?) AND ativo = 1
             """, (usuario,))
             
-            if result and check_password_hash(result[3], senha):
+            if not result:
+                return None
+
+            hashed = result[3] or ""
+
+            # 1) Tentar validar como hash do Werkzeug (qualquer esquema suportado: pbkdf2, scrypt, etc.)
+            ok = False
+            try:
+                ok = check_password_hash(hashed, senha)
+            except Exception:
+                ok = False
+
+            # 2) Se falhar, tentar como bcrypt ($2a/$2b/$2y) se disponível
+            if not ok and (hashed.startswith("$2a$") or hashed.startswith("$2b$") or hashed.startswith("$2y$")):
+                try:
+                    import bcrypt
+                    ok = bcrypt.checkpw(senha.encode("utf-8"), hashed.encode("utf-8"))
+                except Exception:
+                    ok = False
+
+            if ok:
                 return {
                     'id': result[0],
                     'nome': result[1],
@@ -1668,7 +1688,7 @@ class Database:
         except Exception as e:
             print(f"Erro ao verificar login: {str(e)}")
             return None
-        
+
     def migrar_despesas_existentes(self):
         """Migra despesas pagas existentes para a movimentacao_caixa"""
         try:

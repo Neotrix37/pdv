@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from datetime import datetime
 from typing import Dict, Any, List
 from repositories.produto_repository import ProdutoRepository
@@ -36,11 +37,27 @@ class SyncManager:
     def _get_backend_url(self) -> str:
         """Obtém a URL do backend do arquivo de configuração."""
         try:
-            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    return config.get('server_url', 'http://localhost:8000')
+            candidates = []
+            # 1) Caminhos quando empacotado (PyInstaller)
+            if getattr(sys, 'frozen', False):
+                exe_dir = os.path.dirname(sys.executable)
+                candidates.append(os.path.join(exe_dir, 'config.json'))
+                candidates.append(os.path.join(exe_dir, '_internal', 'config.json'))
+
+            # 2) Caminho do repositório (dev)
+            repo_root = os.path.dirname(os.path.dirname(__file__))
+            candidates.append(os.path.join(repo_root, 'config.json'))
+
+            for cfg in candidates:
+                try:
+                    if os.path.exists(cfg):
+                        with open(cfg, 'r', encoding='utf-8') as f:
+                            conf = json.load(f)
+                            url = conf.get('server_url')
+                            if url:
+                                return url
+                except Exception:
+                    continue
         except Exception:
             pass
         return os.getenv("BACKEND_URL", "http://localhost:8000")

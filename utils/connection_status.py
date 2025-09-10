@@ -2,6 +2,7 @@ import asyncio
 import httpx
 import json
 import os
+import sys
 from typing import Optional, Dict, Any
 
 class ConnectionStatus:
@@ -13,11 +14,28 @@ class ConnectionStatus:
     def _get_server_url(self) -> str:
         """Obtém a URL do servidor do arquivo de configuração."""
         try:
-            config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
-            if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    return config.get('server_url', 'http://127.0.0.1:8000')
+            # 1) Quando empacotado com PyInstaller, procurar ao lado do executável
+            candidates = []
+            if getattr(sys, 'frozen', False):
+                exe_dir = os.path.dirname(sys.executable)
+                candidates.append(os.path.join(exe_dir, 'config.json'))
+                # Algumas builds podem colocar assets dentro de _internal
+                candidates.append(os.path.join(exe_dir, '_internal', 'config.json'))
+
+            # 2) Caminho de desenvolvimento (repo)
+            repo_root = os.path.dirname(os.path.dirname(__file__))
+            candidates.append(os.path.join(repo_root, 'config.json'))
+
+            for config_path in candidates:
+                try:
+                    if os.path.exists(config_path):
+                        with open(config_path, 'r', encoding='utf-8') as f:
+                            config = json.load(f)
+                            url = config.get('server_url')
+                            if url:
+                                return url
+                except Exception:
+                    continue
         except Exception:
             pass
         return 'http://127.0.0.1:8000'

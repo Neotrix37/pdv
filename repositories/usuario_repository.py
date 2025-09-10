@@ -9,6 +9,7 @@ import os
 import json
 import platform
 from utils.migration_helper import MigrationHelper
+from werkzeug.security import generate_password_hash
 
 class UsuarioRepository:
     def __init__(self, backend_url: str = None):
@@ -288,6 +289,15 @@ class UsuarioRepository:
         """Cria usuário no banco local."""
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.cursor()
+            # Normalizar senha: se vier em texto puro, transformar em hash; se vazia, manter vazio
+            raw = usuario_data.get('senha', '')
+            senha_to_store = raw
+            try:
+                if raw and not (str(raw).startswith('pbkdf2:') or str(raw).startswith('$2a$') or str(raw).startswith('$2b$') or str(raw).startswith('$2y$')):
+                    senha_to_store = generate_password_hash(str(raw))
+            except Exception:
+                # Em último caso, armazena como veio
+                senha_to_store = raw
             cursor.execute("""
                 INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo, salario,
                                     created_at, updated_at, uuid, synced)
@@ -295,7 +305,7 @@ class UsuarioRepository:
             """, (
                 usuario_data['nome'],
                 usuario_data['usuario'],
-                usuario_data.get('senha', ''),
+                senha_to_store,
                 usuario_data.get('nivel', 1),
                 usuario_data.get('is_admin', 0),
                 usuario_data.get('ativo', 1),
@@ -373,6 +383,27 @@ class UsuarioRepository:
         """Atualiza usuário no banco local."""
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.cursor()
+            # Buscar hash atual para preservar se senha não for enviada
+            try:
+                cursor.execute("SELECT senha FROM usuarios WHERE id = ?", (usuario_id,))
+                row = cursor.fetchone()
+                current_hash = row[0] if row else ''
+            except Exception:
+                current_hash = ''
+
+            # Normalizar senha: se vier em texto puro, gerar hash; se não vier, manter a atual
+            raw = usuario_data.get('senha', None)
+            if raw is None or raw == '':
+                senha_to_store = current_hash
+            else:
+                s = str(raw)
+                if s.startswith('pbkdf2:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
+                    senha_to_store = s
+                else:
+                    try:
+                        senha_to_store = generate_password_hash(s)
+                    except Exception:
+                        senha_to_store = s
             cursor.execute("""
                 UPDATE usuarios 
                 SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, salario = ?,
@@ -381,7 +412,7 @@ class UsuarioRepository:
             """, (
                 usuario_data['nome'],
                 usuario_data['usuario'],
-                usuario_data.get('senha', ''),
+                senha_to_store,
                 usuario_data.get('nivel', 1),
                 usuario_data.get('is_admin', 0),
                 usuario_data.get('salario', 0.0),
@@ -674,15 +705,33 @@ class UsuarioRepository:
                 has_uuid = 'uuid' in columns
                 has_synced = 'synced' in columns
                 
+                # Determinar senha: usar a enviada pelo servidor, se houver; caso contrário
+                # tentar reutilizar uma senha local de um usuário com mesmo 'usuario'
+                senha_inserir = usuario_servidor.get('senha')
+                if not senha_inserir:
+                    try:
+                        cursor.execute("SELECT senha FROM usuarios WHERE LOWER(usuario) = LOWER(?) LIMIT 1", (usuario_servidor['usuario'],))
+                        row = cursor.fetchone()
+                        if row and row[0]:
+                            senha_inserir = row[0]
+                    except Exception:
+                        pass
+                if not senha_inserir:
+                    # Definir uma senha inicial padrão para permitir primeiro login local
+                    try:
+                        senha_inserir = generate_password_hash('842384')
+                    except Exception:
+                        senha_inserir = ''
+
                 if has_uuid and has_synced:
                     cursor.execute("""
                         INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo, salario,
-                                            created_at, updated_at, uuid, synced)
+                                              created_at, updated_at, uuid, synced)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         usuario_servidor['nome'],
                         usuario_servidor['usuario'],
-                        usuario_servidor.get('senha', ''),
+                        senha_inserir,
                         usuario_servidor.get('nivel', 1),
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
@@ -695,12 +744,12 @@ class UsuarioRepository:
                 else:
                     cursor.execute("""
                         INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo, salario,
-                                            created_at, updated_at)
+                                              created_at, updated_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         usuario_servidor['nome'],
                         usuario_servidor['usuario'],
-                        usuario_servidor.get('senha', ''),
+                        senha_inserir,
                         usuario_servidor.get('nivel', 1),
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
@@ -754,35 +803,47 @@ class UsuarioRepository:
                 has_uuid = 'uuid' in columns
                 has_synced = 'synced' in columns
                 
+                # Buscar senha atual para preservar quando o servidor não enviar
+                try:
+                    cursor.execute("SELECT senha FROM usuarios WHERE id = ?", (usuario_id,))
+                    row = cursor.fetchone()
+                    senha_atual = row[0] if row else ''
+                except Exception:
+                    senha_atual = ''
+
+                # Determinar senha a gravar: somente substitui se o servidor enviar um valor não vazio
+                senha_nova = usuario_servidor.get('senha')
+                if not senha_nova:
+                    senha_nova = senha_atual
+
                 if has_uuid and has_synced:
                     cursor.execute("""
-                        UPDATE usuarios SET 
-                            nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, 
-                            ativo = ?, salario = ?, updated_at = ?, uuid = ?, synced = ?
+                        UPDATE usuarios 
+                        SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, ativo = ?, salario = ?,
+                            updated_at = ?, uuid = ?, synced = 1
                         WHERE id = ?
                     """, (
                         usuario_servidor['nome'],
                         usuario_servidor['usuario'],
-                        usuario_servidor.get('senha', ''),
+                        senha_nova,
                         usuario_servidor.get('nivel', 1),
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
                         usuario_servidor.get('salario', 0.0),
                         usuario_servidor.get('updated_at', datetime.now().isoformat()),
                         usuario_servidor['uuid'],
-                        1,  # synced = 1
                         usuario_id
                     ))
                 else:
                     cursor.execute("""
-                        UPDATE usuarios SET 
-                            nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, 
-                            ativo = ?, salario = ?, updated_at = ?
+                        UPDATE usuarios 
+                        SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, ativo = ?, salario = ?,
+                            updated_at = ?
                         WHERE id = ?
                     """, (
                         usuario_servidor['nome'],
                         usuario_servidor['usuario'],
-                        usuario_servidor.get('senha', ''),
+                        senha_nova,
                         usuario_servidor.get('nivel', 1),
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
