@@ -300,11 +300,25 @@ class UsuariosView(ft.UserControl):
                 'pode_gerenciar_despesas': self.pode_gerenciar_despesas_switch.value,
                 'salario': salario
             }
+            # LOG: Detalhes do formulário antes de salvar
+            print("[USUARIOS_VIEW] Salvando usuário...")
+            print(f"  - nome: {dados['nome']}")
+            print(f"  - usuario: {dados['usuario']}")
+            print(f"  - is_admin: {dados['is_admin']}")
+            print(f"  - pode_abastecer: {dados['pode_abastecer']}")
+            print(f"  - pode_gerenciar_despesas: {dados['pode_gerenciar_despesas']}")
+            print(f"  - salario: {dados['salario']}")
             
             if self.usuario_em_edicao:
                 # Atualizar usuário existente
                 if self.senha_field.value:  # Se uma nova senha foi fornecida
-                    dados['senha'] = generate_password_hash(self.senha_field.value)
+                    raw_pwd = self.senha_field.value
+                    sanitized = raw_pwd.strip()
+                    print(f"  - senha (raw): {repr(raw_pwd)}")
+                    print(f"  - senha (sanitizada): {repr(sanitized)}")
+                    hash_gerado = generate_password_hash(sanitized)
+                    print(f"  - senha (hash): {hash_gerado[:30]}... (len={len(hash_gerado)})")
+                    dados['senha'] = hash_gerado
                 
                 resultado = self.usuario_repo.update(self.usuario_em_edicao, dados)
                 if not resultado:
@@ -315,7 +329,13 @@ class UsuariosView(ft.UserControl):
                 if not self.senha_field.value:
                     raise ValueError("Senha é obrigatória para novo usuário!")
                 
-                dados['senha'] = generate_password_hash(self.senha_field.value)
+                raw_pwd = self.senha_field.value
+                sanitized = raw_pwd.strip()
+                print(f"  - senha (raw): {repr(raw_pwd)}")
+                print(f"  - senha (sanitizada): {repr(sanitized)}")
+                hash_gerado = generate_password_hash(sanitized)
+                print(f"  - senha (hash): {hash_gerado[:30]}... (len={len(hash_gerado)})")
+                dados['senha'] = hash_gerado
                 resultado = self.usuario_repo.create(dados)
                 if not resultado:
                     raise Exception("Falha ao criar usuário")

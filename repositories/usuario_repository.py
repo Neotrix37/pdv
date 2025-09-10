@@ -291,13 +291,17 @@ class UsuarioRepository:
             cursor = conn.cursor()
             # Normalizar senha: se vier em texto puro, transformar em hash; se vazia, manter vazio
             raw = usuario_data.get('senha', '')
-            senha_to_store = raw
-            try:
-                if raw and not (str(raw).startswith('pbkdf2:') or str(raw).startswith('$2a$') or str(raw).startswith('$2b$') or str(raw).startswith('$2y$')):
-                    senha_to_store = generate_password_hash(str(raw))
-            except Exception:
-                # Em último caso, armazena como veio
-                senha_to_store = raw
+            senha_to_store = ''
+            if raw:
+                s = str(raw)
+                if s.startswith('pbkdf2:') or s.startswith('scrypt:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
+                    senha_to_store = s
+                else:
+                    try:
+                        senha_to_store = generate_password_hash(s)
+                    except Exception:
+                        # Nunca armazenar texto puro; deixe vazio para forçar reset/normalização posterior
+                        senha_to_store = ''
             cursor.execute("""
                 INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo, salario,
                                     created_at, updated_at, uuid, synced)
@@ -410,13 +414,14 @@ class UsuarioRepository:
                 senha_to_store = current['senha']
             else:
                 s = str(raw)
-                if s.startswith('pbkdf2:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
+                if s.startswith('pbkdf2:') or s.startswith('scrypt:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
                     senha_to_store = s
                 else:
                     try:
                         senha_to_store = generate_password_hash(s)
                     except Exception:
-                        senha_to_store = s
+                        # Em falha de hash, preserve o hash atual em vez de gravar texto puro
+                        senha_to_store = current['senha']
             cursor.execute("""
                 UPDATE usuarios 
                 SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, salario = ?,

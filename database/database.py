@@ -1643,46 +1643,75 @@ class Database:
     def verificar_login(self, usuario, senha):
         """Verifica as credenciais do usuário"""
         try:
-            from werkzeug.security import check_password_hash
-            
-            # Buscar usuário
-            result = self.fetchone("""
+            # Normalizar entradas
+            usuario_norm = (usuario or "").strip()
+            senha_norm = (senha or "").strip()
+
+            # Imports seguros (Werkzeug é o padrão para PBKDF2)
+            try:
+                from werkzeug.security import check_password_hash
+                has_werkzeug = True
+            except Exception as ie:
+                print(f"[LOGIN] Falha ao importar Werkzeug: {ie}")
+                has_werkzeug = False
+                check_password_hash = None  # type: ignore
+
+            # Buscar usuário (case-insensitive) e ativo
+            result = self.fetchone(
+                """
                 SELECT id, nome, usuario, senha, is_admin, ativo, nivel, pode_abastecer, pode_gerenciar_despesas
                 FROM usuarios 
                 WHERE LOWER(usuario) = LOWER(?) AND ativo = 1
-            """, (usuario,))
-            
+                """,
+                (usuario_norm,)
+            )
+
             if not result:
+                print(f"[LOGIN] Usuario não encontrado ou inativo: '{usuario_norm}'")
                 return None
 
-            hashed = result[3] or ""
+            # Extrair campos
+            uid, nome, usr, hashed, is_admin, ativo = result[0], result[1], result[2], (result[3] or ""), result[4], result[5]
+            nivel = result[6] if len(result) > 6 else 1
+            pode_abastecer = bool(result[7]) if len(result) > 7 else False
+            pode_gerenciar_despesas = bool(result[8]) if len(result) > 8 else False
 
-            # 1) Tentar validar como hash do Werkzeug (qualquer esquema suportado: pbkdf2, scrypt, etc.)
+            print(f"[LOGIN] Encontrado usuario='{usr}', ativo={bool(ativo)}, nivel={nivel}, admin={bool(is_admin)}")
+            print(f"[LOGIN] Prefixo hash salvo: '{hashed[:10]}' (len={len(hashed)})")
+
             ok = False
-            try:
-                ok = check_password_hash(hashed, senha)
-            except Exception:
-                ok = False
 
-            # 2) Se falhar, tentar como bcrypt ($2a/$2b/$2y) se disponível
-            if not ok and (hashed.startswith("$2a$") or hashed.startswith("$2b$") or hashed.startswith("$2y$")):
+            # Preferência: validar com Werkzeug (PBKDF2, etc.)
+            if has_werkzeug and hashed:
                 try:
-                    import bcrypt
-                    ok = bcrypt.checkpw(senha.encode("utf-8"), hashed.encode("utf-8"))
-                except Exception:
+                    ok = check_password_hash(hashed, senha_norm)
+                except Exception as ve:
+                    print(f"[LOGIN] Erro em check_password_hash: {ve}")
+                    ok = False
+
+            # Bcrypt (caso hash começe com $2a/$2b/$2y)
+            if not ok and hashed and (hashed.startswith("$2a$") or hashed.startswith("$2b$") or hashed.startswith("$2y$")):
+                try:
+                    import bcrypt  # type: ignore
+                    ok = bcrypt.checkpw(senha_norm.encode("utf-8"), hashed.encode("utf-8"))
+                except Exception as be:
+                    print(f"[LOGIN] Erro em bcrypt.checkpw: {be}")
                     ok = False
 
             if ok:
+                print("[LOGIN] Autenticação OK")
                 return {
-                    'id': result[0],
-                    'nome': result[1],
-                    'usuario': result[2],
-                    'is_admin': bool(result[4]),
-                    'ativo': bool(result[5]),
-                    'nivel': result[6] if len(result) > 6 else 1,
-                    'pode_abastecer': bool(result[7]) if len(result) > 7 else False,
-                    'pode_gerenciar_despesas': bool(result[8]) if len(result) > 8 else False
+                    'id': uid,
+                    'nome': nome,
+                    'usuario': usr,
+                    'is_admin': bool(is_admin),
+                    'ativo': bool(ativo),
+                    'nivel': nivel,
+                    'pode_abastecer': pode_abastecer,
+                    'pode_gerenciar_despesas': pode_gerenciar_despesas
                 }
+
+            print("[LOGIN] Falha de autenticação: senha incorreta ou hash inválido")
             return None
             
         except Exception as e:
