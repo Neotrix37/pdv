@@ -1100,9 +1100,15 @@ class PDVView(ft.UserControl):
                 
             # Continua com o fluxo normal para produtos não vendidos por peso
             # Verificar estoque disponível
-            estoque_atual = self.db.fetchone("""
+            produto_db = self.db.fetchone("""
                 SELECT estoque FROM produtos WHERE id = ?
-            """, (produto['id'],))['estoque']
+            """, (produto['id'],))
+            
+            if not produto_db:
+                # Produto não encontrado no banco local, usar estoque do cache
+                estoque_atual = produto.get('estoque', 0)
+            else:
+                estoque_atual = produto_db['estoque']
             
             # Procurar se o produto já existe no carrinho
             produto_existente = None
@@ -1159,7 +1165,15 @@ class PDVView(ft.UserControl):
             """, (produto_id,))
             
             if not produto:
-                return
+                # Se não encontrou no banco local, buscar no cache (modo web)
+                if hasattr(self, '_produtos_cache'):
+                    produto_cache = next((p for p in self._produtos_cache if p['id'] == produto_id), None)
+                    if produto_cache:
+                        produto = produto_cache
+                    else:
+                        return
+                else:
+                    return
             
             # Calcular quantidade no carrinho
             qtd_carrinho = sum(
