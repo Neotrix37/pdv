@@ -1461,6 +1461,8 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 if vendas_servidor:
                     total_vendas_dia = vendas_servidor.get('vendas_dia', 0.0)
                     total_vendas_mes = vendas_servidor.get('vendas_mes', 0.0)
+                    # Armazenar em cache para evitar que seja sobrescrito
+                    self._vendas_servidor_cache = vendas_servidor
                     print(f"📊 Vendas do servidor - Dia: MT {total_vendas_dia:.2f}, Mês: MT {total_vendas_mes:.2f}")
             
             valor_estoque = self.db.get_valor_estoque()
@@ -2104,8 +2106,18 @@ class DashboardView(ft.UserControl, TranslationMixin):
             print("Forçando reconstrução dos cards...")
             print(f"Resetar valores: {resetar}")
             
-            # Inicializar valores
-            if not self.usuario.get('is_admin') and resetar:
+            # Verificar se já temos valores do servidor armazenados
+            if hasattr(self, '_vendas_servidor_cache') and self._vendas_servidor_cache:
+                print("🌐 Usando valores do servidor em cache")
+                total_vendas_dia = self._vendas_servidor_cache.get('vendas_dia', 0.0)
+                total_vendas_mes = self._vendas_servidor_cache.get('vendas_mes', 0.0)
+                total_vendas_congelador = 0.0  # Servidor não tem vendas congelador
+                valor_estoque = self.db.get_valor_estoque()
+                valor_potencial = self.db.get_valor_venda_estoque()
+                lucro_mes = 0.0  # Servidor não calcula lucro
+                lucro_dia = 0.0  # Servidor não calcula lucro
+                print(f"📊 Cache servidor - Dia: MT {total_vendas_dia:.2f}, Mês: MT {total_vendas_mes:.2f}")
+            elif not self.usuario.get('is_admin') and resetar:
                 # Se for funcionário e resetar=True, zerar os valores
                 total_vendas_mes = 0.0
                 total_vendas_dia = 0.0
