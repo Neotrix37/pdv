@@ -447,8 +447,15 @@ def main(page: ft.Page):
             
         # Rota para abastecimento (mínima)
         elif page.route == "/abastecimento":
+            # Debug: verificar permissões do usuário
+            print(f"[ABASTECIMENTO] Usuário: {page.data.get('usuario', 'N/A')}")
+            print(f"[ABASTECIMENTO] is_admin: {page.data.get('is_admin', False)}")
+            print(f"[ABASTECIMENTO] pode_abastecer: {page.data.get('pode_abastecer', False)}")
+            print(f"[ABASTECIMENTO] page.data completo: {page.data}")
+            
             # Verificar se é admin OU tem permissão de abastecimento
             if not page.data.get('is_admin') and not page.data.get('pode_abastecer'):
+                print("[ABASTECIMENTO] Acesso negado - redirecionando para dashboard")
                 page.go("/dashboard")
                 return
             page.views.append(
@@ -461,8 +468,15 @@ def main(page: ft.Page):
             )
         
         elif page.route == "/despesas":
+            # Debug: verificar permissões do usuário
+            print(f"[DESPESAS] Usuário: {page.data.get('usuario', 'N/A')}")
+            print(f"[DESPESAS] is_admin: {page.data.get('is_admin', False)}")
+            print(f"[DESPESAS] pode_gerenciar_despesas: {page.data.get('pode_gerenciar_despesas', False)}")
+            print(f"[DESPESAS] page.data completo: {page.data}")
+            
             # Verificar se é admin OU tem permissão de gerenciar despesas
             if not page.data.get('is_admin') and not page.data.get('pode_gerenciar_despesas'):
+                print("[DESPESAS] Acesso negado - redirecionando para dashboard")
                 page.go("/dashboard")
                 return
             page.views.append(
