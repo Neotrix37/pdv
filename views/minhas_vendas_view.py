@@ -1,5 +1,6 @@
 import flet as ft
 from database.database import Database
+from repositories.venda_repository import VendaRepository
 import locale
 from datetime import datetime, timedelta
 from utils.translation_mixin import TranslationMixin
@@ -13,6 +14,7 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
         self.page.bgcolor = ft.colors.BLUE_50  # Define cor de fundo
         self.usuario = usuario
         self.db = Database()
+        self.venda_repo = VendaRepository()
         # Configurar locale com fallback para ambientes que não suportam pt_PT.UTF-8
         try:
             locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
@@ -91,41 +93,15 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
 
     def carregar_vendas(self, e=None):
         try:
-            # Construir a consulta SQL base
-            sql = """
-                SELECT 
-                    v.id,
-                    DATE(v.data_venda) as data,
-                    TIME(v.data_venda) as hora,
-                    v.total,
-                    v.forma_pagamento,
-                    v.status,
-                    GROUP_CONCAT(
-                        p.nome || ' (' || iv.quantidade || 'x - MT ' || 
-                        printf('%.2f', iv.preco_unitario) || ')'
-                    ) as itens
-                FROM vendas v
-                JOIN itens_venda iv ON iv.venda_id = v.id
-                JOIN produtos p ON p.id = iv.produto_id
-                WHERE v.usuario_id = ?
-                AND DATE(v.data_venda) BETWEEN ? AND ?
-                AND (v.status IS NULL OR v.status != 'Anulada')
-            """
+            print(f"🔍 Carregando vendas híbridas do usuário {self.usuario['id']} para período {self.data_inicial.value} a {self.data_final.value}")
             
-            # Parâmetros da consulta
-            params = [self.usuario['id'], self.data_inicial.value, self.data_final.value]
-            
-            # Aplicar filtro de status
-            if self.filtro_status.value == "Não Fechadas":
-                sql += " AND (v.status IS NULL OR v.status != 'Fechada')"
-            elif self.filtro_status.value == "Fechadas":
-                sql += " AND v.status = 'Fechada'"
-                
-            # Ordenação
-            sql += " GROUP BY v.id ORDER BY v.data_venda DESC"
-            
-            # Executar a consulta
-            vendas = self.db.fetchall(sql, params)
+            # Usar repositório híbrido para buscar vendas do usuário
+            vendas = self.venda_repo.get_vendas_usuario_com_itens(
+                usuario_id=self.usuario['id'],
+                data_inicio=self.data_inicial.value,
+                data_fim=self.data_final.value,
+                status_filter=self.filtro_status.value if self.filtro_status.value != "Todas" else None
+            )
 
             # Calcular total do período
             total_periodo = sum(v['total'] for v in vendas)

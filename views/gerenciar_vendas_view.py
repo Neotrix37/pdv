@@ -1,5 +1,6 @@
 import flet as ft
 from database.database import Database
+from repositories.venda_repository import VendaRepository
 from datetime import datetime, timedelta
 from utils.translation_mixin import TranslationMixin
 from utils.helpers import formatar_moeda
@@ -17,6 +18,7 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
         self.page.bgcolor = ft.colors.WHITE
         self.usuario = usuario
         self.db = Database()
+        self.venda_repo = VendaRepository()
         
         # Configurações de paginação
         self.pagina_atual = 1
@@ -489,32 +491,23 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
             # Calcular o offset para paginação
             offset = (self.pagina_atual - 1) * self.itens_por_pagina
             
-            # Primeiro, obter o total de vendas para paginação
-            total_query = self.db.fetchone(f"""
-                SELECT COUNT(*) as total
-                FROM vendas v
-                JOIN usuarios u ON v.usuario_id = u.id
-                WHERE DATE(v.data_venda) BETWEEN ? AND ?
-            """, (self.data_inicio.value, self.data_fim.value))
+            # Usar repositório híbrido para buscar vendas
+            print(f"🔍 Buscando vendas híbridas para período {self.data_inicio.value} a {self.data_fim.value}")
             
-            self.total_vendas = total_query['total'] if total_query else 0
+            # Obter total de vendas para paginação
+            self.total_vendas = self.venda_repo.count_vendas_periodo(
+                self.data_inicio.value, 
+                self.data_fim.value
+            )
             total_paginas = (self.total_vendas + self.itens_por_pagina - 1) // self.itens_por_pagina
             
-            # Buscar vendas no banco de dados com paginação
-            vendas = self.db.fetchall(f"""
-                SELECT 
-                    v.id,
-                    strftime('%Y-%m-%d %H:%M:%S', v.data_venda) as data_venda,
-                    u.nome as vendedor,
-                    v.total,
-                    v.forma_pagamento,
-                    {status_sql}
-                FROM vendas v
-                JOIN usuarios u ON v.usuario_id = u.id
-                WHERE DATE(v.data_venda) BETWEEN ? AND ?
-                ORDER BY v.data_venda DESC
-                LIMIT ? OFFSET ?
-            """, (self.data_inicio.value, self.data_fim.value, self.itens_por_pagina, offset))
+            # Buscar vendas com paginação usando repositório híbrido
+            vendas = self.venda_repo.get_vendas_com_detalhes(
+                data_inicio=self.data_inicio.value,
+                data_fim=self.data_fim.value,
+                limit=self.itens_por_pagina,
+                offset=offset
+            )
             
             # Registrar tempo após consulta
             apos_consulta = datetime.now()

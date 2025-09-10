@@ -2106,7 +2106,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
             print("Forçando reconstrução dos cards...")
             print(f"Resetar valores: {resetar}")
             
-            # Verificar se já temos valores do servidor armazenados
+            # Verificar se já temos valores do servidor armazenados (prioridade máxima)
             if hasattr(self, '_vendas_servidor_cache') and self._vendas_servidor_cache:
                 print("🌐 Usando valores do servidor em cache")
                 total_vendas_dia = self._vendas_servidor_cache.get('vendas_dia', 0.0)

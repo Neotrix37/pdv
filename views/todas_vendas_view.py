@@ -1,5 +1,6 @@
 import flet as ft
 from database.database import Database
+from repositories.venda_repository import VendaRepository
 import locale
 from datetime import datetime
 from views.generic_table_style import apply_table_style
@@ -11,6 +12,7 @@ class TodasVendasView(ft.UserControl):
         self.page.bgcolor = ft.colors.BLUE_50
         self.usuario = usuario
         self.db = Database()
+        self.venda_repo = VendaRepository()
         # Configurar locale com fallback para ambientes que não suportam pt_PT.UTF-8
         try:
             locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
@@ -110,36 +112,19 @@ class TodasVendasView(ft.UserControl):
 
     def carregar_vendas(self, e=None):
         try:
-            params = [self.data_inicial.value, self.data_final.value]
-            where_clause = "WHERE DATE(v.data_venda) BETWEEN ? AND ?"
+            print(f"🔍 Carregando todas as vendas híbridas para período {self.data_inicial.value} a {self.data_final.value}")
             
-            # Adiciona filtro por usuário se um usuário específico for selecionado
+            # Determinar filtro de usuário
+            usuario_filtro = None
             if self.usuario_dropdown.value and self.usuario_dropdown.value != "todos":
-                where_clause += " AND v.usuario_id = ?"
-                params.append(self.usuario_dropdown.value)
-
-            vendas = self.db.fetchall(f"""
-                SELECT 
-                    v.id,
-                    u.nome as vendedor,
-                    DATE(v.data_venda) as data,
-                    TIME(v.data_venda) as hora,
-                    v.total,
-                    v.forma_pagamento,
-                    v.status,
-                    GROUP_CONCAT(
-                        p.nome || ' (' || iv.quantidade || 'x - MT ' || 
-                        printf('%.2f', iv.preco_unitario) || ')'
-                    ) as itens
-                FROM vendas v
-                JOIN usuarios u ON u.id = v.usuario_id
-                JOIN itens_venda iv ON iv.venda_id = v.id
-                JOIN produtos p ON p.id = iv.produto_id
-                {where_clause}
-                AND (v.status IS NULL OR v.status != 'Anulada')
-                GROUP BY v.id
-                ORDER BY v.data_venda DESC
-            """, tuple(params))
+                usuario_filtro = int(self.usuario_dropdown.value)
+            
+            # Usar repositório híbrido para buscar todas as vendas
+            vendas = self.venda_repo.get_vendas_com_detalhes(
+                data_inicio=self.data_inicial.value,
+                data_fim=self.data_final.value,
+                usuario_id=usuario_filtro
+            )
 
             # Calcular totais por vendedor
             totais_vendedor = {}
