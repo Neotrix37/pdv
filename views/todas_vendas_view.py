@@ -11,7 +11,18 @@ class TodasVendasView(ft.UserControl):
         self.page.bgcolor = ft.colors.BLUE_50
         self.usuario = usuario
         self.db = Database()
-        locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
+        # Configurar locale com fallback para ambientes que não suportam pt_PT.UTF-8
+        try:
+            locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+            except locale.Error:
+                try:
+                    locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+                except locale.Error:
+                    # Fallback final - usar locale padrão do sistema
+                    pass
         
         # Inicializar o texto de resumo antes de carregar vendas
         self.resumo_text = ft.Text(

@@ -13,7 +13,18 @@ class MinhasVendasView(ft.UserControl, TranslationMixin):
         self.page.bgcolor = ft.colors.BLUE_50  # Define cor de fundo
         self.usuario = usuario
         self.db = Database()
-        locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
+        # Configurar locale com fallback para ambientes que não suportam pt_PT.UTF-8
+        try:
+            locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+            except locale.Error:
+                try:
+                    locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+                except locale.Error:
+                    # Fallback final - usar locale padrão do sistema
+                    pass
         
         # Inicializar o texto de total
         self.total_text = ft.Text(

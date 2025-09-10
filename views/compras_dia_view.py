@@ -14,7 +14,18 @@ class ComprasDiaView(ft.UserControl):
         self.usuario = usuario
         self.usuario_id = usuario['id'] if usuario else None
         self.db = Database()
-        locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
+        # Configurar locale com fallback para ambientes que não suportam pt_PT.UTF-8
+        try:
+            locale.setlocale(locale.LC_ALL, 'pt_PT.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+            except locale.Error:
+                try:
+                    locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+                except locale.Error:
+                    # Fallback final - usar locale padrão do sistema
+                    pass
         
         print("\n=== Inicializando ComprasDiaView ===")
         print(f"Usuário logado: {self.usuario['nome']} (ID: {self.usuario['id']})") 

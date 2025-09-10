@@ -9,12 +9,17 @@ class AbastecimentoView(ft.UserControl):
         self.page = page
         self.usuario = usuario or {}
         
+        print(f"[ABASTECIMENTO] Inicializando AbastecimentoView para usuário: {self.usuario.get('usuario', 'N/A')}")
+        print(f"[ABASTECIMENTO] Permissões: is_admin={self.usuario.get('is_admin')}, pode_abastecer={self.usuario.get('pode_abastecer')}")
+        
         # Verificar permissão de abastecimento
         if not self.usuario.get('is_admin') and not self.usuario.get('pode_abastecer'):
             # Usuário não tem permissão
             self.sem_permissao = True
+            print("[ABASTECIMENTO] Usuário sem permissão - será exibida tela de acesso negado")
         else:
             self.sem_permissao = False
+            print("[ABASTECIMENTO] Usuário com permissão - carregando interface completa")
         
         self.header = create_header(
             page=self.page,
@@ -364,11 +369,15 @@ class AbastecimentoView(ft.UserControl):
             
     def _carregar_dados(self):
         try:
+            print("[ABASTECIMENTO] Iniciando carregamento de dados...")
             self.db = Database()
             # Garante que, mesmo após restaurar um backup antigo, o esquema necessário exista
             try:
+                print("[ABASTECIMENTO] Verificando esquema do banco...")
                 self.db.ensure_abastecimento_schema()
-            except Exception:
+                print("[ABASTECIMENTO] Esquema verificado com sucesso")
+            except Exception as e:
+                print(f"[ABASTECIMENTO] Erro ao verificar esquema: {e}")
                 pass
             # Fornecedores
             fornecedores = self.db.fetchall(
