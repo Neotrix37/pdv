@@ -1681,22 +1681,26 @@ class Database:
 
             ok = False
 
-            # Preferência: validar com Werkzeug (PBKDF2, etc.)
-            if has_werkzeug and hashed:
-                try:
-                    ok = check_password_hash(hashed, senha_norm)
-                except Exception as ve:
-                    print(f"[LOGIN] Erro em check_password_hash: {ve}")
-                    ok = False
+            # Se não há hash salvo, ir direto para fallback online
+            if not hashed or len(hashed.strip()) == 0:
+                print("[LOGIN] Hash vazio - tentando fallback online")
+            else:
+                # Preferência: validar com Werkzeug (PBKDF2, etc.)
+                if has_werkzeug and hashed:
+                    try:
+                        ok = check_password_hash(hashed, senha_norm)
+                    except Exception as ve:
+                        print(f"[LOGIN] Erro em check_password_hash: {ve}")
+                        ok = False
 
-            # Bcrypt (caso hash começe com $2a/$2b/$2y)
-            if not ok and hashed and (hashed.startswith("$2a$") or hashed.startswith("$2b$") or hashed.startswith("$2y$")):
-                try:
-                    import bcrypt  # type: ignore
-                    ok = bcrypt.checkpw(senha_norm.encode("utf-8"), hashed.encode("utf-8"))
-                except Exception as be:
-                    print(f"[LOGIN] Erro em bcrypt.checkpw: {be}")
-                    ok = False
+                # Bcrypt (caso hash começe com $2a/$2b/$2y)
+                if not ok and hashed and (hashed.startswith("$2a$") or hashed.startswith("$2b$") or hashed.startswith("$2y$")):
+                    try:
+                        import bcrypt  # type: ignore
+                        ok = bcrypt.checkpw(senha_norm.encode("utf-8"), hashed.encode("utf-8"))
+                    except Exception as be:
+                        print(f"[LOGIN] Erro em bcrypt.checkpw: {be}")
+                        ok = False
 
             if ok:
                 print("[LOGIN] Autenticação OK")
@@ -1711,7 +1715,7 @@ class Database:
                     'pode_gerenciar_despesas': pode_gerenciar_despesas
                 }
 
-            print("[LOGIN] Falha de autenticação: senha incorreta ou hash inválido")
+            print("[LOGIN] Falha de autenticação local - tentando fallback online")
 
             # Fallback: tentar autenticar no backend e popular hash local
             try:
