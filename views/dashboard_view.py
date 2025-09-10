@@ -34,7 +34,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
         lucro_dia = 0.0  # Inicializa com valor padrão
         
         # Obter valores específicos para administradores
-        if self.usuario.get('is_admin'):
+        if self._flag_true(self.usuario.get('is_admin')):
             lucro_mes = self.db.get_lucro_disponivel_mes()  # Lucro menos saques
             lucro_dia = self.db.get_lucro_dia()
         
@@ -104,7 +104,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
         try:
             if hasattr(self, 'vendas_mes') and hasattr(self.vendas_mes, 'page') and self.vendas_mes.page:
                 self.vendas_mes.update()
-            if hasattr(self, 'lucro_mes') and hasattr(self.lucro_mes, 'page') and self.lucro_mes.page:
+            if hasattr(self, 'lucro_mes') and hasattr(self.lucro_mes, 'page') and self.lucro_mes.page and self._flag_true(self.usuario.get('is_admin')):
                 self.lucro_mes.update()
             if hasattr(self, 'vendas_dia') and hasattr(self.vendas_dia, 'page') and self.vendas_dia.page:
                 self.vendas_dia.update()
@@ -453,7 +453,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
             # Atualizar textos
             self.vendas_dia.value = f"MT {vendas_dia:.2f}"
             self.vendas_mes.value = f"MT {vendas_mes:.2f}"
-            if self.usuario.get('is_admin'):
+            if self._flag_true(self.usuario.get('is_admin')):
                 self.lucro_dia.value = f"MT {lucro_dia:.2f}"
                 self.lucro_mes.value = f"MT {lucro_mes:.2f}"
             # Atualizar UI
@@ -468,6 +468,17 @@ class DashboardView(ft.UserControl, TranslationMixin):
             print(f"Erro ao buscar números do dashboard (web): {e}")
 
     def build(self):
+        # Diagnóstico: exibir permissões do usuário
+        try:
+            print("[DASHBOARD] Usuario logado:", {
+                'nome': self.usuario.get('nome'),
+                'usuario': self.usuario.get('usuario'),
+                'is_admin': self.usuario.get('is_admin'),
+                'pode_abastecer': self.usuario.get('pode_abastecer'),
+                'pode_gerenciar_despesas': self.usuario.get('pode_gerenciar_despesas'),
+            })
+        except Exception:
+            pass
         # Cabeçalho com botão sair
         header = ft.Container(
             content=ft.Row(
@@ -613,7 +624,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
         ]
         
         # Adicionar botão de abastecimento para usuários com permissão (admin ou pode_abastecer)
-        if self.usuario.get('is_admin') or self.usuario.get('pode_abastecer'):
+        if self._flag_true(self.usuario.get('is_admin')) or self._flag_true(self.usuario.get('pode_abastecer')):
             buttons.extend([
                 ft.Container(
                     content=ft.ElevatedButton(
@@ -630,7 +641,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
             ])
         
         # Adicionar botão de despesas para usuários com permissão (admin ou pode_gerenciar_despesas)
-        if self.usuario.get('is_admin') or self.usuario.get('pode_gerenciar_despesas'):
+        if self._flag_true(self.usuario.get('is_admin')) or self._flag_true(self.usuario.get('pode_gerenciar_despesas')):
             buttons.extend([
                 ft.Container(
                     content=ft.ElevatedButton(
@@ -646,7 +657,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 )
             ])
         
-        if self.usuario.get('is_admin'):
+        if self._flag_true(self.usuario.get('is_admin')):
             buttons.extend([
                 ft.Container(
                     content=ft.ElevatedButton(
@@ -766,6 +777,23 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 padding=20
             )
 
+    def _flag_true(self, value) -> bool:
+        """Converte flags vindas como bool/int/str para booleano confiável.
+        Aceita valores como 1, '1', 'true', 'True', 'SIM', 'yes', 'y'.
+        """
+        try:
+            if isinstance(value, bool):
+                return value
+            if value is None:
+                return False
+            # ints/floats
+            if isinstance(value, (int, float)):
+                return int(value) != 0
+            s = str(value).strip().lower()
+            return s in ("1", "true", "sim", "yes", "y", "t")
+        except Exception:
+            return False
+
     def get_stats_cards(self):
         try:
             # Buscar vendas do dia
@@ -806,7 +834,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
             lucro_dia = 0.0  # Inicializa com valor padrão
             
             # Buscar valores específicos para administradores
-            if self.usuario.get('is_admin'):
+            if self._flag_true(self.usuario.get('is_admin')):
                 lucro_mes = self.db.get_lucro_mes()
                 lucro_dia = self.db.get_lucro_dia()
             

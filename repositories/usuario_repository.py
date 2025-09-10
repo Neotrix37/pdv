@@ -255,20 +255,22 @@ class UsuarioRepository:
         # Gerar UUID se não existir
         if 'uuid' not in usuario_data or not usuario_data['uuid']:
             usuario_data['uuid'] = str(uuid.uuid4())
-        
+    
         # Tentar criar no servidor primeiro
         if self._is_online():
             try:
+                # Não enviar senha hasheada para o backend; se detectar hash, remover do payload
+                payload = dict(usuario_data)
+                s = str(payload.get('senha', '') or '')
+                if s.startswith('pbkdf2:') or s.startswith('scrypt:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
+                    payload.pop('senha', None)
                 response = httpx.post(
                     f"{self.api_base}/usuarios/",
-                    json=usuario_data,
+                    json=payload,
                     timeout=5.0
                 )
                 if response.status_code in [200, 201]:
                     usuario_data['synced'] = 1
-                    server_usuario = response.json()
-                    usuario_data.update(server_usuario)
-                    print("Usuario criado no servidor com sucesso")
                 else:
                     print(f"Erro HTTP {response.status_code}: {response.text}")
             except Exception as e:
@@ -304,8 +306,9 @@ class UsuarioRepository:
                         senha_to_store = ''
             cursor.execute("""
                 INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo, salario,
+                                    pode_abastecer, pode_gerenciar_despesas,
                                     created_at, updated_at, uuid, synced)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 usuario_data['nome'],
                 usuario_data['usuario'],
@@ -314,6 +317,8 @@ class UsuarioRepository:
                 usuario_data.get('is_admin', 0),
                 usuario_data.get('ativo', 1),
                 usuario_data.get('salario', 0.0),
+                1 if usuario_data.get('pode_abastecer', False) else 0,
+                1 if usuario_data.get('pode_gerenciar_despesas', False) else 0,
                 datetime.now().isoformat(),
                 datetime.now().isoformat(),
                 usuario_data['uuid'],
@@ -357,16 +362,20 @@ class UsuarioRepository:
         # Tentar atualizar no servidor
         if self._is_online():
             try:
+                payload = dict(usuario_data)
+                s = str(payload.get('senha', '') or '')
+                if s.startswith('pbkdf2:') or s.startswith('scrypt:') or s.startswith('$2a$') or s.startswith('$2b$') or s.startswith('$2y$'):
+                    payload.pop('senha', None)
                 response = httpx.put(
                     f"{self.api_base}/usuarios/{usuario_uuid}",
-                    json=usuario_data,
+                    json=payload,
                     timeout=5.0
                 )
                 if response.status_code == 200:
-                    usuario_data['synced'] = 1
-                    server_usuario = response.json()
-                    usuario_data.update(server_usuario)
-                    print("Usuario atualizado no servidor com sucesso")
+                    try:
+                        usuario_data.update(response.json())
+                    except Exception:
+                        pass
                 else:
                     print(f"Erro HTTP {response.status_code}: {response.text}")
             except Exception as e:
@@ -425,6 +434,7 @@ class UsuarioRepository:
             cursor.execute("""
                 UPDATE usuarios 
                 SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, salario = ?,
+                    pode_abastecer = ?, pode_gerenciar_despesas = ?,
                     updated_at = ?, synced = ?
                 WHERE id = ?
             """, (
@@ -434,6 +444,8 @@ class UsuarioRepository:
                 usuario_data.get('nivel', current['nivel']),
                 usuario_data.get('is_admin', current['is_admin']),
                 usuario_data.get('salario', current['salario']),
+                1 if usuario_data.get('pode_abastecer', current.get('pode_abastecer', 0)) else 0,
+                1 if usuario_data.get('pode_gerenciar_despesas', current.get('pode_gerenciar_despesas', 0)) else 0,
                 datetime.now().isoformat(),
                 usuario_data.get('synced', 0),
                 usuario_id
@@ -724,40 +736,41 @@ class UsuarioRepository:
                 has_synced = 'synced' in columns
                 
                 # Determinar senha: usar a enviada pelo servidor, se houver; caso contrário
-                # tentar reutilizar uma senha local de um usuário com mesmo 'usuario'
-                senha_inserir = usuario_servidor.get('senha')
-                if not senha_inserir:
+                senha_server = (
+                    usuario_servidor.get('senha')
+                    or usuario_servidor.get('senha_hash')
+                    or ''
+                )
+                # Se vier senha em texto (raríssimo), hash aqui
+                if senha_server and not (str(senha_server).startswith('pbkdf2:') or str(senha_server).startswith('scrypt:') or str(senha_server).startswith('$2')):
                     try:
-                        cursor.execute("SELECT senha FROM usuarios WHERE LOWER(usuario) = LOWER(?) LIMIT 1", (usuario_servidor['usuario'],))
-                        row = cursor.fetchone()
-                        if row and row[0]:
-                            senha_inserir = row[0]
+                        senha_server = generate_password_hash(str(senha_server))
                     except Exception:
-                        pass
-                if not senha_inserir:
-                    # Definir uma senha inicial padrão para permitir primeiro login local
-                    try:
-                        senha_inserir = generate_password_hash('842384')
-                    except Exception:
-                        senha_inserir = ''
+                        senha_server = ''
+
+                pode_abastecer = 1 if usuario_servidor.get('pode_abastecer', False) else 0
+                pode_despesas = 1 if usuario_servidor.get('pode_gerenciar_despesas', False) else 0
 
                 if has_uuid and has_synced:
                     cursor.execute("""
                         INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo, salario,
-                                              created_at, updated_at, uuid, synced)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                              pode_abastecer, pode_gerenciar_despesas,
+                                              uuid, synced, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         usuario_servidor['nome'],
                         usuario_servidor['usuario'],
-                        senha_inserir,
+                        senha_server,
                         usuario_servidor.get('nivel', 1),
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
                         usuario_servidor.get('salario', 0.0),
+                        pode_abastecer,
+                        pode_despesas,
+                        usuario_servidor.get('uuid', str(uuid.uuid4())),
+                        1,
                         usuario_servidor.get('created_at', datetime.now().isoformat()),
-                        usuario_servidor.get('updated_at', datetime.now().isoformat()),
-                        usuario_servidor['uuid'],
-                        1  # synced = 1 (já sincronizado)
+                        usuario_servidor.get('updated_at', datetime.now().isoformat())
                     ))
                 else:
                     cursor.execute("""
@@ -767,7 +780,7 @@ class UsuarioRepository:
                     """, (
                         usuario_servidor['nome'],
                         usuario_servidor['usuario'],
-                        senha_inserir,
+                        senha_server,
                         usuario_servidor.get('nivel', 1),
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
@@ -821,24 +834,33 @@ class UsuarioRepository:
                 has_uuid = 'uuid' in columns
                 has_synced = 'synced' in columns
                 
-                # Buscar senha atual para preservar quando o servidor não enviar
-                try:
-                    cursor.execute("SELECT senha FROM usuarios WHERE id = ?", (usuario_id,))
-                    row = cursor.fetchone()
-                    senha_atual = row[0] if row else ''
-                except Exception:
-                    senha_atual = ''
+                # Determinar senha
+                senha_server = (
+                    usuario_servidor.get('senha')
+                    or usuario_servidor.get('senha_hash')
+                    or None
+                )
+                # Se vier senha em texto (raríssimo), hash aqui
+                if senha_server and not (str(senha_server).startswith('pbkdf2:') or str(senha_server).startswith('scrypt:') or str(senha_server).startswith('$2')):
+                    try:
+                        senha_server = generate_password_hash(str(senha_server))
+                    except Exception:
+                        senha_server = None
 
-                # Determinar senha a gravar: somente substitui se o servidor enviar um valor não vazio
-                senha_nova = usuario_servidor.get('senha')
-                if not senha_nova:
-                    senha_nova = senha_atual
+                # Buscar senha atual para preservar caso o servidor não envie
+                cursor.execute("SELECT senha FROM usuarios WHERE id = ?", (usuario_id,))
+                row = cursor.fetchone()
+                senha_atual = row[0] if row else ''
+                senha_nova = senha_server if senha_server is not None else senha_atual
+
+                pode_abastecer = 1 if usuario_servidor.get('pode_abastecer', False) else 0
+                pode_despesas = 1 if usuario_servidor.get('pode_gerenciar_despesas', False) else 0
 
                 if has_uuid and has_synced:
                     cursor.execute("""
-                        UPDATE usuarios 
-                        SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, ativo = ?, salario = ?,
-                            updated_at = ?, uuid = ?, synced = 1
+                        UPDATE usuarios SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, ativo = ?, salario = ?,
+                            pode_abastecer = ?, pode_gerenciar_despesas = ?,
+                            updated_at = ?, synced = 1
                         WHERE id = ?
                     """, (
                         usuario_servidor['nome'],
@@ -848,14 +870,15 @@ class UsuarioRepository:
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
                         usuario_servidor.get('salario', 0.0),
+                        pode_abastecer,
+                        pode_despesas,
                         usuario_servidor.get('updated_at', datetime.now().isoformat()),
-                        usuario_servidor['uuid'],
                         usuario_id
                     ))
                 else:
                     cursor.execute("""
-                        UPDATE usuarios 
-                        SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, ativo = ?, salario = ?,
+                        UPDATE usuarios SET nome = ?, usuario = ?, senha = ?, nivel = ?, is_admin = ?, ativo = ?, salario = ?,
+                            pode_abastecer = ?, pode_gerenciar_despesas = ?,
                             updated_at = ?
                         WHERE id = ?
                     """, (
@@ -866,6 +889,8 @@ class UsuarioRepository:
                         usuario_servidor.get('is_admin', 0),
                         usuario_servidor.get('ativo', 1),
                         usuario_servidor.get('salario', 0.0),
+                        pode_abastecer,
+                        pode_despesas,
                         usuario_servidor.get('updated_at', datetime.now().isoformat()),
                         usuario_id
                     ))

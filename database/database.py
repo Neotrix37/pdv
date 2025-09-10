@@ -1712,6 +1712,123 @@ class Database:
                 }
 
             print("[LOGIN] Falha de autenticação: senha incorreta ou hash inválido")
+
+            # Fallback: tentar autenticar no backend e popular hash local
+            try:
+                import httpx
+                from werkzeug.security import generate_password_hash
+
+                def _get_backend_url():
+                    try:
+                        import json, os
+                        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+                        if os.path.exists(config_path):
+                            with open(config_path, 'r', encoding='utf-8') as f:
+                                conf = json.load(f)
+                                return conf.get('server_url', 'http://localhost:8000')
+                    except Exception:
+                        pass
+                    import os as _os
+                    return _os.getenv('BACKEND_URL', 'http://localhost:8000')
+
+                base = (_get_backend_url() or '').rstrip('/')
+                candidates = [
+                    f"{base}/api/auth/login",
+                    f"{base}/auth/login",
+                ]
+
+                payloads = [
+                    {"usuario": usuario_norm, "senha": senha_norm},
+                    {"username": usuario_norm, "password": senha_norm},
+                ]
+
+                ok_remote = False
+                remote_user = {}
+                with httpx.Client(timeout=8.0) as client:
+                    for url in candidates:
+                        for data in payloads:
+                            try:
+                                resp = client.post(url, json=data)
+                                if resp.status_code == 200:
+                                    body = resp.json() or {}
+                                    # Tentar extrair dados do usuário do payload
+                                    remote_user = body.get('user') or body.get('usuario') or body
+                                    ok_remote = True
+                                    print(f"[LOGIN][REMOTE] Autenticado no backend via {url}")
+                                    break
+                            except Exception as ex:
+                                print(f"[LOGIN][REMOTE] Erro ao autenticar em {url}: {ex}")
+                        if ok_remote:
+                            break
+
+                if ok_remote:
+                    # Preparar flags e nome
+                    r_nome = remote_user.get('nome') or nome
+                    r_usr = remote_user.get('usuario') or usr or usuario_norm
+                    r_is_admin = 1 if (remote_user.get('is_admin') or remote_user.get('admin') or False) else 0
+                    r_pode_abastecer = 1 if (remote_user.get('pode_abastecer') or False) else 0
+                    r_pode_despesas = 1 if (remote_user.get('pode_gerenciar_despesas') or False) else 0
+                    r_nivel = remote_user.get('nivel', nivel)
+                    r_uuid = remote_user.get('uuid') or None
+
+                    # Hash local do plaintext informado
+                    novo_hash = generate_password_hash(senha_norm)
+
+                    cursor = self.conn.cursor()
+                    # Verificar se usuário existe localmente (case-insensitive)
+                    cursor.execute("SELECT id FROM usuarios WHERE LOWER(usuario)=LOWER(?)", (r_usr,))
+                    row = cursor.fetchone()
+                    if row:
+                        # Atualizar registro existente
+                        cursor.execute(
+                            """
+                            UPDATE usuarios
+                            SET senha = ?, is_admin = ?, pode_abastecer = ?, pode_gerenciar_despesas = ?,
+                                nome = ?, nivel = ?, ativo = 1,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE LOWER(usuario) = LOWER(?)
+                            """,
+                            (novo_hash, r_is_admin, r_pode_abastecer, r_pode_despesas, r_nome, r_nivel, r_usr)
+                        )
+                        if r_uuid:
+                            try:
+                                cursor.execute("UPDATE usuarios SET uuid = ?, synced = 1 WHERE LOWER(usuario)=LOWER(?)", (r_uuid, r_usr))
+                            except Exception:
+                                pass
+                        self.conn.commit()
+                        uid_atual = row[0]
+                    else:
+                        # Inserir novo usuário local
+                        try:
+                            cursor.execute(
+                                """
+                                INSERT INTO usuarios (nome, usuario, senha, nivel, is_admin, ativo,
+                                                      pode_abastecer, pode_gerenciar_despesas, created_at, updated_at, uuid, synced)
+                                VALUES (?, ?, ?, ?, ?, 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, 1)
+                                """,
+                                (r_nome, r_usr, novo_hash, r_nivel, r_is_admin, r_pode_abastecer, r_pode_despesas, r_uuid)
+                            )
+                            self.conn.commit()
+                            uid_atual = cursor.lastrowid
+                        except Exception as ex:
+                            print(f"[LOGIN][REMOTE] Falha ao inserir usuário local: {ex}")
+                            self.conn.rollback()
+                            return None
+
+                    print("[LOGIN][REMOTE] Autenticação OK (sincronizada localmente)")
+                    return {
+                        'id': uid_atual,
+                        'nome': r_nome,
+                        'usuario': r_usr,
+                        'is_admin': bool(r_is_admin),
+                        'ativo': True,
+                        'nivel': r_nivel,
+                        'pode_abastecer': bool(r_pode_abastecer),
+                        'pode_gerenciar_despesas': bool(r_pode_despesas)
+                    }
+            except Exception as ex:
+                print(f"[LOGIN][REMOTE] Fallback remoto indisponível: {ex}")
+
             return None
             
         except Exception as e:
