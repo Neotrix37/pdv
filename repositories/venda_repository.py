@@ -805,12 +805,16 @@ class VendaRepository:
             return result[0] if result else 0.0
     
     def get_vendas_com_detalhes(self, data_inicio: str, data_fim: str, usuario_id: int = None, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
-        """Obtém vendas com detalhes para páginas de gerenciamento (híbrido)."""
+        """Obtém vendas com detalhes, priorizando dados do servidor se online."""
+        print(f"🔍 Buscando vendas de {data_inicio} a {data_fim}, usuário: {usuario_id}")
+        
         # Tentar buscar do servidor primeiro se online
         if self._is_online():
             try:
+                print("🌐 Sistema online - buscando vendas do servidor...")
                 vendas_servidor = self._get_vendas_servidor()
                 if vendas_servidor:
+                    print(f"📡 Servidor retornou {len(vendas_servidor)} vendas")
                     # Filtrar por período e usuário se especificado
                     vendas_filtradas = []
                     for venda in vendas_servidor:
@@ -818,22 +822,34 @@ class VendaRepository:
                         if data_venda:
                             data_venda_date = data_venda.split('T')[0] if 'T' in data_venda else data_venda.split(' ')[0]
                             if data_inicio <= data_venda_date <= data_fim:
-                                if usuario_id is None or venda.get('usuario_id') == usuario_id:
+                                # Para vendas do servidor sem usuario_id, aceitar se usuario_id não foi especificado
+                                # ou se a venda tem usuario_id e corresponde ao filtro
+                                venda_usuario_id = venda.get('usuario_id')
+                                if usuario_id is None or (venda_usuario_id is not None and venda_usuario_id == usuario_id):
                                     # Normalizar estrutura de dados do servidor para compatibilidade
                                     venda_normalizada = self._normalizar_venda_servidor(venda)
                                     vendas_filtradas.append(venda_normalizada)
+                                    print(f"✅ Venda {venda.get('id', 'N/A')[:8]} incluída (usuario_id: {venda_usuario_id})")
+                                else:
+                                    print(f"❌ Venda {venda.get('id', 'N/A')[:8]} filtrada (usuario_id: {venda_usuario_id}, filtro: {usuario_id})")
                     
                     # Aplicar paginação se especificada
                     if limit:
                         vendas_filtradas = vendas_filtradas[offset:offset + limit]
                     
-                    print(f"🌐 Retornando {len(vendas_filtradas)} vendas do servidor para período {data_inicio} a {data_fim}")
+                    print(f"🌐 Retornando {len(vendas_filtradas)} vendas filtradas do servidor")
                     return vendas_filtradas
+                else:
+                    print("📭 Servidor não retornou vendas - usando dados locais")
             except Exception as e:
-                print(f"Erro ao buscar vendas do servidor: {e}")
+                print(f"❌ Erro ao buscar vendas do servidor: {e}")
+        else:
+            print("📱 Sistema offline - usando dados locais")
         
         # Fallback para dados locais
-        return self._get_vendas_locais_com_detalhes(data_inicio, data_fim, usuario_id, limit, offset)
+        vendas_locais = self._get_vendas_locais_com_detalhes(data_inicio, data_fim, usuario_id, limit, offset)
+        print(f"💾 Retornando {len(vendas_locais)} vendas locais")
+        return vendas_locais
     
     def _get_vendas_servidor(self) -> List[Dict[str, Any]]:
         """Busca vendas do servidor via API."""
@@ -841,9 +857,13 @@ class VendaRepository:
             with httpx.Client(timeout=10.0) as client:
                 response = client.get(f"{self.api_base}/vendas/")
                 if response.status_code == 200:
-                    return response.json()
+                    vendas_servidor = response.json()
+                    print(f"🌐 Recebidas {len(vendas_servidor)} vendas do servidor via API")
+                    return vendas_servidor
+                else:
+                    print(f"❌ Erro na API de vendas: status {response.status_code}")
         except Exception as e:
-            print(f"Erro ao buscar vendas do servidor: {e}")
+            print(f"❌ Erro ao buscar vendas do servidor: {e}")
         return []
     
     def _get_vendas_locais_com_detalhes(self, data_inicio: str, data_fim: str, usuario_id: int = None, limit: int = None, offset: int = 0) -> List[Dict[str, Any]]:
@@ -912,16 +932,25 @@ class VendaRepository:
             data_parte = data_venda
             hora_parte = "00:00:00"
         
+        # Para vendas do servidor sem usuario_id, usar valor padrão
+        usuario_id = venda.get('usuario_id')
+        if usuario_id is None:
+            # Usar ID 1 como padrão para vendas sem usuário específico
+            usuario_id = 1
+            vendedor = 'Sistema'
+        else:
+            vendedor = venda.get('vendedor', f'Usuário {usuario_id}')
+        
         return {
             'id': venda.get('id'),
             'data_venda': data_venda,
             'data': data_parte,
             'hora': hora_parte,
-            'vendedor': venda.get('vendedor', 'Desconhecido'),
+            'vendedor': vendedor,
             'total': venda.get('total', 0.0),
             'forma_pagamento': venda.get('forma_pagamento', 'Não informado'),
             'status': venda.get('status', 'Ativa'),
-            'usuario_id': venda.get('usuario_id'),
+            'usuario_id': usuario_id,
             'itens': venda.get('itens', 'Sem itens')
         }
     
@@ -946,16 +975,22 @@ class VendaRepository:
             return result[0] if result else 0
     
     def get_vendas_usuario_com_itens(self, usuario_id: int, data_inicio: str, data_fim: str, status_filter: str = None) -> List[Dict[str, Any]]:
-        """Obtém vendas de um usuário específico com itens (para página Minhas Vendas)."""
+        """Obtém vendas de um usuário específico com itens, priorizando dados do servidor se online."""
+        print(f"🔍 Buscando vendas do usuário {usuario_id} de {data_inicio} a {data_fim}")
+        
         # Tentar buscar do servidor primeiro se online
         if self._is_online():
             try:
+                print("🌐 Sistema online - buscando vendas do usuário do servidor...")
                 vendas_servidor = self._get_vendas_servidor()
                 if vendas_servidor:
+                    print(f"📡 Servidor retornou {len(vendas_servidor)} vendas")
                     # Filtrar vendas do usuário no período
                     vendas_usuario = []
                     for venda in vendas_servidor:
-                        if venda.get('usuario_id') == usuario_id:
+                        # Para vendas do servidor sem usuario_id, não incluir em consultas específicas de usuário
+                        venda_usuario_id = venda.get('usuario_id')
+                        if venda_usuario_id == usuario_id:
                             data_venda = venda.get('data_venda', '') or venda.get('created_at', '')
                             if data_venda:
                                 data_venda_date = data_venda.split('T')[0] if 'T' in data_venda else data_venda.split(' ')[0]
@@ -963,15 +998,32 @@ class VendaRepository:
                                     # Aplicar filtro de status se especificado
                                     status = venda.get('status', 'Ativa')
                                     if status_filter is None or self._match_status_filter(status, status_filter):
-                                        vendas_usuario.append(venda)
+                                        # Normalizar dados do servidor
+                                        venda_normalizada = self._normalizar_venda_servidor(venda)
+                                        vendas_usuario.append(venda_normalizada)
+                                        print(f"✅ Venda {venda.get('id', 'N/A')[:8]} do usuário {usuario_id} incluída")
+                                    else:
+                                        print(f"❌ Venda {venda.get('id', 'N/A')[:8]} filtrada por status: {status}")
+                                else:
+                                    print(f"❌ Venda {venda.get('id', 'N/A')[:8]} fora do período: {data_venda_date}")
+                        elif venda_usuario_id is None:
+                            print(f"⚠️ Venda {venda.get('id', 'N/A')[:8]} sem usuario_id - ignorando para consulta específica")
+                        else:
+                            print(f"❌ Venda {venda.get('id', 'N/A')[:8]} de outro usuário: {venda_usuario_id}")
                     
                     print(f"🌐 Retornando {len(vendas_usuario)} vendas do usuário {usuario_id} do servidor")
                     return vendas_usuario
+                else:
+                    print("📭 Servidor não retornou vendas - usando dados locais")
             except Exception as e:
-                print(f"Erro ao buscar vendas do usuário do servidor: {e}")
+                print(f"❌ Erro ao buscar vendas do usuário do servidor: {e}")
+        else:
+            print("📱 Sistema offline - usando dados locais")
         
         # Fallback para dados locais
-        return self._get_vendas_usuario_locais_com_itens(usuario_id, data_inicio, data_fim, status_filter)
+        vendas_locais = self._get_vendas_usuario_locais_com_itens(usuario_id, data_inicio, data_fim, status_filter)
+        print(f"💾 Retornando {len(vendas_locais)} vendas locais do usuário {usuario_id}")
+        return vendas_locais
     
     def _match_status_filter(self, status: str, status_filter: str) -> bool:
         """Verifica se o status da venda corresponde ao filtro."""
