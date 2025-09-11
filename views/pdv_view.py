@@ -1705,40 +1705,38 @@ class PDVView(ft.UserControl):
 
                 # Best-effort: se backend estiver acessível, enviar venda imediatamente
                 try:
-                    # Descobrir base da API
                     from pathlib import Path
                     import json as _json
+                    cfg_path = Path(__file__).resolve().parents[1] / 'config.json'
                     api_base = None
-                    try:
-                        cfg_path = Path(__file__).resolve().parents[1] / 'config.json'
-                        if cfg_path.exists():
+                    if cfg_path.exists():
+                        try:
                             conf = _json.loads(cfg_path.read_text(encoding='utf-8'))
-                            api_base = conf.get('server_url')
-                    except Exception:
-                        api_base = None
-                    if api_base:
+                            api_base = (conf.get('server_url') or '').strip()
+                        except Exception:
+                            api_base = None
+                    if not api_base:
+                        print("[ONLINE] server_url não configurado; não enviando venda agora")
+                    else:
                         api_base = api_base.rstrip('/')
-                        # Montar payload com UUIDs de produto
                         itens_payload = []
-                        for item in self.itens:
-                            # Obter uuid do produto local
+                        for item in list(self.itens):
                             try:
                                 rowp = self.db.fetchone("SELECT uuid, venda_por_peso FROM produtos WHERE id = ?", (item['id'],))
                                 prod_uuid = None
                                 venda_por_peso = 0
                                 if rowp is not None:
                                     try:
-                                        prod_uuid = rowp['uuid'] if 'uuid' in (rowp.keys() if hasattr(rowp,'keys') else []) else dict(rowp).get('uuid')
-                                        venda_por_peso = rowp['venda_por_peso'] if 'venda_por_peso' in (rowp.keys() if hasattr(rowp,'keys') else []) else dict(rowp).get('venda_por_peso', 0)
+                                        prod_uuid = rowp['uuid'] if ('uuid' in (rowp.keys() if hasattr(rowp,'keys') else [])) else dict(rowp).get('uuid')
+                                        venda_por_peso = rowp['venda_por_peso'] if ('venda_por_peso' in (rowp.keys() if hasattr(rowp,'keys') else [])) else dict(rowp).get('venda_por_peso', 0)
                                     except Exception:
                                         pass
                                 if not prod_uuid:
-                                    # Sem UUID, não é possível enviar este item
                                     continue
                                 qtd_raw = float(item.get('quantidade') or 0)
                                 qtd_int = int(qtd_raw) if qtd_raw >= 1 else 1
                                 peso_val = float(item.get('peso_kg') or 0.0)
-                                if (int(venda_por_peso) == 1) and peso_val <= 0.0:
+                                if int(venda_por_peso) == 1 and peso_val <= 0.0:
                                     try:
                                         preco_unitario = float(item.get('preco') or 0)
                                         subtotal_item = float(item.get('subtotal') or 0)
@@ -1757,22 +1755,20 @@ class PDVView(ft.UserControl):
                                 itens_payload.append(it)
                             except Exception as _e_item:
                                 print(f"[ONLINE] Falha ao montar item para envio: {item.get('id')}: {_e_item}")
-
                         if itens_payload:
                             payload = {
-                                'uuid': None,  # o backend gera se não enviado
+                                'uuid': None,
                                 'total': float(self.total_venda or 0.0),
                                 'desconto': 0.0,
                                 'forma_pagamento': self.forma_pagamento.value or 'Dinheiro',
                                 'itens': itens_payload
                             }
+                            url_post = f"{api_base if api_base.endswith('/api') else api_base + '/api'}/vendas/"
+                            print(f"[ONLINE] Enviando venda para servidor: {url_post} total={payload['total']} itens={len(itens_payload)}")
                             try:
-                                url_post = f"{api_base if api_base.endswith('/api') else api_base + '/api'}/vendas/"
-                                print(f"[ONLINE] Enviando venda para servidor: {url_post} total={payload['total']} itens={len(itens_payload)}")
                                 with httpx.Client(timeout=10.0) as client:
                                     resp = client.post(url_post, json=payload)
                                     if resp.status_code in (200, 201):
-                                        # Marcar venda local como sincronizada
                                         try:
                                             cur_sync = self.db.conn.cursor()
                                             cur_sync.execute("UPDATE vendas SET synced = 1 WHERE id = ?", (venda_id,))
@@ -1786,8 +1782,8 @@ class PDVView(ft.UserControl):
                                         except Exception:
                                             det = resp.text
                                         print(f"[ONLINE] Falha no envio da venda: {resp.status_code} - {det}")
-                    else:
-                        print("[ONLINE] server_url não configurado; não enviando venda agora")
+                            except Exception as e_http:
+                                print(f"[ONLINE] Erro HTTP ao enviar venda: {e_http}")
                 except Exception as e_online:
                     print(f"[ONLINE] Erro inesperado ao tentar enviar venda: {e_online}")
                 
