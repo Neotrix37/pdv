@@ -640,7 +640,7 @@ class ProdutoRepository:
                     f"{self.api_base}/produtos/{produto_uuid}",
                     timeout=5.0
                 )
-                if response.status_code == 200:
+                if response.status_code in (200, 204, 404):
                     synced = 1
                     try:
                         self._ensure_change_log_table()
