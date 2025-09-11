@@ -19,6 +19,31 @@ class VendaRepository:
         self._ensure_change_log_table()
         # Acompanhar avisos do último pull
         self._last_missing_products = set()
+
+    def _get_default_usuario_id(self) -> int:
+        """Obtém um usuário local padrão para atribuir às vendas vindas do servidor.
+        Preferir admin; caso contrário, o primeiro usuário disponível; fallback para 1.
+        """
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                # Tentar admin
+                try:
+                    cur.execute("SELECT id FROM usuarios WHERE is_admin = 1 AND ativo = 1 ORDER BY id LIMIT 1")
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return int(row[0])
+                except Exception:
+                    pass
+                # Qualquer usuário ativo
+                cur.execute("SELECT id FROM usuarios WHERE ativo = 1 ORDER BY id LIMIT 1")
+                row = cur.fetchone()
+                if row and row[0]:
+                    return int(row[0])
+        except Exception:
+            pass
+        return 1
     
     def _get_backend_url(self) -> str:
         """Obtém a URL do backend do arquivo de configuração."""
@@ -554,6 +579,7 @@ class VendaRepository:
                             origem = v.get('origem') or 'servidor'
                             valor_original_divida = float(v.get('valor_original_divida') or 0.0)
                             desconto_aplicado_divida = float(v.get('desconto', v.get('desconto_aplicado_divida') or 0.0))
+                            usuario_id_local = int(v.get('usuario_id') or 0) or self._get_default_usuario_id()
 
                             if row is None:
                                 # Inserir venda nova
@@ -566,7 +592,7 @@ class VendaRepository:
                                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                                     """,
                                     (
-                                        v.get('usuario_id'), total, forma_pagamento, valor_recebido, troco,
+                                        usuario_id_local, total, forma_pagamento, valor_recebido, troco,
                                         data_venda, status, motivo_alteracao, alterado_por, data_alteracao,
                                         origem, valor_original_divida, desconto_aplicado_divida, venda_uuid
                                     )
@@ -586,7 +612,7 @@ class VendaRepository:
                                     WHERE id = ?
                                     """,
                                     (
-                                        v.get('usuario_id'), total, forma_pagamento, valor_recebido, troco,
+                                        usuario_id_local, total, forma_pagamento, valor_recebido, troco,
                                         status, motivo_alteracao, alterado_por, data_alteracao,
                                         origem, valor_original_divida, desconto_aplicado_divida, venda_id_local
                                     )

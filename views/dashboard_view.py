@@ -448,10 +448,8 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         self.update(); self.page.update()
                 except Exception:
                     pass
-                vendas_dia = 0.0
-                vendas_mes = 0.0
-                lucro_dia = 0.0
-                lucro_mes = 0.0
+                vendas_dia = None
+                vendas_mes = None
 
                 url_dia_1 = f"{api_base}/metricas/vendas-dia"
                 url_mes_1 = f"{api_base}/metricas/vendas-mes"
@@ -468,17 +466,17 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     vendas_mes = float(payload.get('total') or 0.0)
 
                 # Sucesso: atualizar cache
-                self._web_metrics_cache["vendas_dia"] = vendas_dia
-                self._web_metrics_cache["vendas_mes"] = vendas_mes
-                self._web_metrics_cache["lucro_dia"] = lucro_dia
-                self._web_metrics_cache["lucro_mes"] = lucro_mes
+                if vendas_dia is not None:
+                    self._web_metrics_cache["vendas_dia"] = vendas_dia
+                if vendas_mes is not None:
+                    self._web_metrics_cache["vendas_mes"] = vendas_mes
 
                 # Atualizar textos e UI
-                self.vendas_dia.value = f"MT {vendas_dia:.2f}"
-                self.vendas_mes.value = f"MT {vendas_mes:.2f}"
-                if self._flag_true(self.usuario.get('is_admin')):
-                    self.lucro_dia.value = f"MT {lucro_dia:.2f}"
-                    self.lucro_mes.value = f"MT {lucro_mes:.2f}"
+                if vendas_dia is not None:
+                    self.vendas_dia.value = f"MT {vendas_dia:.2f}"
+                if vendas_mes is not None:
+                    self.vendas_mes.value = f"MT {vendas_mes:.2f}"
+                # Não sobrescrever lucro_dia/lucro_mes aqui; ficam com os valores locais calculados
                 try:
                     self.update()
                     if hasattr(self, 'page') and self.page:
@@ -505,14 +503,10 @@ class DashboardView(ft.UserControl, TranslationMixin):
         try:
             vendas_dia = float(self._web_metrics_cache.get("vendas_dia", 0.0))
             vendas_mes = float(self._web_metrics_cache.get("vendas_mes", 0.0))
-            lucro_dia = float(self._web_metrics_cache.get("lucro_dia", 0.0))
-            lucro_mes = float(self._web_metrics_cache.get("lucro_mes", 0.0))
 
             self.vendas_dia.value = f"MT {vendas_dia:.2f}"
             self.vendas_mes.value = f"MT {vendas_mes:.2f}"
-            if self._flag_true(self.usuario.get('is_admin')):
-                self.lucro_dia.value = f"MT {lucro_dia:.2f}"
-                self.lucro_mes.value = f"MT {lucro_mes:.2f}"
+            # Manter lucro_dia/lucro_mes locais (não usar cache web de lucro)
             try:
                 self.update()
                 if hasattr(self, 'page') and self.page:

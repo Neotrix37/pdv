@@ -1367,7 +1367,9 @@ class ProdutoRepository:
             return False
     
     def _atualizar_produto_do_servidor(self, produto_id: int, produto_servidor: Dict[str, Any]) -> bool:
-        """Atualiza produto local com dados do servidor."""
+        """Atualiza produto local com dados do servidor, sem sobrescrever o estoque local.
+        O estoque do servidor é armazenado em 'estoque_servidor' para comparação/relatórios.
+        """
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 cursor = conn.cursor()
@@ -1380,7 +1382,6 @@ class ProdutoRepository:
                         preco_venda = ?,
                         categoria_id = ?,
                         fornecedor_id = ?,
-                        estoque = ?,
                         estoque_minimo = ?,
                         estoque_servidor = ?,
                         synced = 1,
@@ -1394,9 +1395,8 @@ class ProdutoRepository:
                     produto_servidor['preco_venda'],
                     produto_servidor.get('categoria_id'),
                     produto_servidor.get('fornecedor_id'),
-                    produto_servidor.get('estoque', 0),
                     produto_servidor.get('estoque_minimo', 0),
-                    produto_servidor.get('estoque', 0),  # Salvar como estoque_servidor também
+                    produto_servidor.get('estoque', 0),  # salvar somente em estoque_servidor
                     produto_servidor.get('updated_at'),
                     produto_id
                 ))

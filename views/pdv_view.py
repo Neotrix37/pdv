@@ -1639,7 +1639,23 @@ class PDVView(ft.UserControl):
                     except Exception:
                         pass
 
+                    # Calcular peso_kg automaticamente para produtos vendidos por peso quando não informado
                     peso_kg_item = float(item.get('peso_kg', 0) or 0)
+                    try:
+                        cur_check = self.db.conn.cursor()
+                        cur_check.execute("SELECT venda_por_peso FROM produtos WHERE id = ?", (item['id'],))
+                        row_vpp = cur_check.fetchone()
+                        is_peso = int(row_vpp[0]) == 1 if row_vpp and row_vpp[0] is not None else False
+                    except Exception:
+                        is_peso = False
+                    if is_peso and peso_kg_item <= 0:
+                        try:
+                            preco_unitario = float(item.get('preco') or 0)
+                            subtotal_item = float(item.get('subtotal') or 0)
+                            if preco_unitario > 0:
+                                peso_kg_item = round(subtotal_item / preco_unitario, 3)
+                        except Exception:
+                            pass
                     cursor.execute("""
                         INSERT INTO itens_venda (
                             venda_id, produto_id, quantidade,
@@ -1668,7 +1684,7 @@ class PDVView(ft.UserControl):
                         venda_por_peso = 0
                         unidade_medida = 'un'
 
-                    decremento = float(item.get('peso_kg', 0) or 0.0)
+                    decremento = float(peso_kg_item or 0.0)
                     if decremento <= 0.0:
                         # Se não há peso informado, usa quantidade
                         try:
