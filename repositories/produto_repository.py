@@ -587,18 +587,54 @@ class ProdutoRepository:
             # Retornar produto atualizado
             return self._get_local_produto_by_id(produto_id)
     
-    def delete(self, produto_id: int) -> bool:
-        """Deleta produto (soft delete). Tenta servidor primeiro, sempre deleta local."""
-        # Obter produto local para UUID
-        produto_local = self._get_local_produto_by_id(produto_id)
-        if not produto_local:
-            return False
-        
-        produto_uuid = produto_local['uuid']
+    def delete(self, produto_id: int | str) -> bool:
+        """Deleta produto (soft delete). Aceita ID local (int) ou UUID (str).
+        Tenta servidor primeiro, sempre aplica soft delete/registro local para refletir na UI e dashboard.
+        """
+        produto_uuid = None
+        produto_local = None
+
+        try:
+            # Resolver produto por ID local (int) ou UUID (str)
+            if isinstance(produto_id, int) or (isinstance(produto_id, str) and produto_id.isdigit()):
+                pid = int(produto_id)
+                produto_local = self._get_local_produto_by_id(pid)
+                if not produto_local:
+                    # Tentar buscar sem filtro de ativo
+                    with sqlite3.connect(str(self.db_path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        cur = conn.cursor()
+                        cur.execute("SELECT * FROM produtos WHERE id = ?", (pid,))
+                        row = cur.fetchone()
+                        if row:
+                            produto_local = dict(row)
+                if not produto_local:
+                    print(f"[DELETE] Produto local ID {produto_id} não encontrado")
+                else:
+                    produto_uuid = (produto_local.get('uuid') or '').strip()
+            else:
+                # Trata como UUID
+                produto_uuid = str(produto_id).strip()
+                produto_local = self._get_local_produto_by_uuid(produto_uuid)
+                if not produto_local:
+                    # Buscar qualquer registro local por UUID (mesmo inativo)
+                    with sqlite3.connect(str(self.db_path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        cur = conn.cursor()
+                        cur.execute("SELECT * FROM produtos WHERE TRIM(COALESCE(uuid,'')) = ?", (produto_uuid,))
+                        row = cur.fetchone()
+                        if row:
+                            produto_local = dict(row)
+        except Exception as res_err:
+            print(f"[DELETE] Falha ao resolver produto {produto_id}: {res_err}")
+
+        if not produto_uuid and produto_local:
+            produto_uuid = (produto_local.get('uuid') or '').strip()
+
         synced = 0
-        
-        # Tentar deletar no servidor
-        if self._is_online():
+
+        # Tentar deletar no servidor (quando temos UUID)
+        if produto_uuid and self._is_online():
             try:
                 response = httpx.delete(
                     f"{self.api_base}/produtos/{produto_uuid}",
@@ -608,19 +644,34 @@ class ProdutoRepository:
                     synced = 1
                     try:
                         self._ensure_change_log_table()
-                        self._log_change(produto_uuid, 'DELETE', {'id': produto_id}, status='synced')
+                        self._log_change(produto_uuid, 'DELETE', {'uuid': produto_uuid, 'id': produto_local.get('id') if produto_local else None}, status='synced')
                     except Exception as le:
                         print(f"[LOG] Falha ao registrar change synced (DELETE): {le}")
+                else:
+                    print(f"[DELETE] Servidor respondeu {response.status_code}: {response.text}")
             except Exception as e:
                 print(f"Erro ao deletar produto no servidor: {e}")
-        
-        # Sempre fazer soft delete local
-        success = self._delete_local_produto(produto_id, synced)
-        
-        # Log para sincronização se não foi sincronizado
-        if synced == 0:
-            self._log_change(produto_uuid, 'DELETE', {'id': produto_id})
-        
+
+        # Sempre aplicar soft delete local (por ID ou por UUID)
+        success = False
+        try:
+            if produto_local and 'id' in produto_local:
+                success = self._delete_local_produto(int(produto_local['id']), synced)
+            elif produto_uuid:
+                success = self._delete_local_produto_by_uuid(produto_uuid, synced)
+            else:
+                print("[DELETE] Nao foi possivel localizar produto local para soft delete")
+        except Exception as loc_err:
+            print(f"[DELETE] Falha no soft delete local: {loc_err}")
+
+        # Log para sincronização se não foi sincronizado (garantir tombstone)
+        if produto_uuid and synced == 0:
+            try:
+                self._ensure_change_log_table()
+                self._log_change(produto_uuid, 'DELETE', {'uuid': produto_uuid, 'id': produto_local.get('id') if produto_local else None})
+            except Exception as le2:
+                print(f"[LOG] Falha ao registrar change pendente (DELETE): {le2}")
+
         return success
     
     async def listar_produtos(self) -> List[Dict[str, Any]]:
@@ -940,6 +991,28 @@ class ProdutoRepository:
                         produto_local = self._get_local_produto_by_uuid(servidor_uuid)
                         
                         if produto_local is None:
+                            # Evitar 'ressurreicao': se houver DELETE pendente para este UUID, nao inserir
+                            try:
+                                import sqlite3 as _sql
+                                with _sql.connect(str(self.db_path)) as _conn:
+                                    _cur = _conn.cursor()
+                                    _cur.execute(
+                                        """
+                                        SELECT 1 FROM change_log
+                                        WHERE entity_type = 'produtos'
+                                          AND operation = 'DELETE'
+                                          AND status = 'pending'
+                                          AND entity_id = ?
+                                        LIMIT 1
+                                        """,
+                                        (servidor_uuid,)
+                                    )
+                                    if _cur.fetchone():
+                                        print(f"Pulando insercao do produto {produto_servidor.get('nome','')} por tombstone DELETE pendente ({servidor_uuid})")
+                                        continue
+                            except Exception as _t_err:
+                                print(f"[PULL] Falha ao checar tombstone de DELETE: {_t_err}")
+                            
                             # Produto novo - inserir localmente
                             # Garantir que vamos persistir o identificador como uuid
                             produto_servidor = {**produto_servidor, 'uuid': servidor_uuid}
@@ -1163,6 +1236,22 @@ class ProdutoRepository:
                 WHERE id = ?
             """, (datetime.now().isoformat(), synced, produto_id))
             
+            success = cursor.rowcount > 0
+            conn.commit()
+            return success
+
+    def _delete_local_produto_by_uuid(self, produto_uuid: str, synced: int) -> bool:
+        """Faz soft delete do produto local usando UUID."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE produtos
+                SET ativo = 0, updated_at = ?, synced = ?
+                WHERE TRIM(COALESCE(uuid,'')) = ?
+                """,
+                (datetime.now().isoformat(), synced, produto_uuid)
+            )
             success = cursor.rowcount > 0
             conn.commit()
             return success

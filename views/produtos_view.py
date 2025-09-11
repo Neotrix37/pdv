@@ -598,6 +598,14 @@ class ProdutosView(ft.UserControl, TranslationMixin):
                     self.page.update()
                 except Exception as ui_err:
                     print(f"[UI] Aviso ao atualizar após exclusão: {ui_err}")
+
+            # Sinalizar para o Dashboard recalcular os cards (estoque/valores) na próxima abertura
+            try:
+                if hasattr(self, 'page') and hasattr(self.page, 'data') and isinstance(self.page.data, dict):
+                    self.page.data['dashboard_needs_update'] = True
+                    print("[DASHBOARD] Marcado para atualização após exclusão de produto")
+            except Exception as flag_err:
+                print(f"[DASHBOARD] Falha ao marcar atualização: {flag_err}")
             
             self.page.show_snack_bar(
                 ft.SnackBar(
