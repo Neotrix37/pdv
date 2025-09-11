@@ -1612,6 +1612,13 @@ class PDVView(ft.UserControl):
                         SELECT preco_custo FROM produtos WHERE id = ?
                     """, (item['id'],))
                     
+                    # Verificar se produto foi encontrado e tem preço de custo
+                    preco_custo = 0.0
+                    if produto and produto.get('preco_custo') is not None:
+                        preco_custo = produto['preco_custo']
+                    else:
+                        print(f"⚠️ Produto {item['id']} não encontrado ou sem preço de custo - usando 0.0")
+                    
                     # Inserir item
                     cursor = self.db.conn.cursor()
                     cursor.execute("""
@@ -1625,7 +1632,7 @@ class PDVView(ft.UserControl):
                         item['id'],
                         item['quantidade'],
                         item['preco'],
-                        produto['preco_custo'],
+                        preco_custo,
                         item['subtotal']
                     ))
                     

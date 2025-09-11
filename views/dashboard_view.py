@@ -1534,73 +1534,52 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 print("=== Fim did_mount() ===")
 
     def _buscar_vendas_servidor(self) -> Optional[Dict[str, float]]:
-        """Busca vendas do servidor quando não há vendas locais"""
+        """Busca vendas do servidor usando endpoints de métricas"""
         try:
             import httpx
-            from datetime import datetime
-            import json
-            import os
             
             # Obter URL do backend
             backend_url = self._get_backend_url()
             
-            print(f"🔗 Tentando buscar vendas do servidor: {backend_url}")
+            print(f"🔗 Tentando buscar métricas do servidor: {backend_url}")
             
             with httpx.Client(timeout=10.0) as client:
-                # Buscar todas as vendas do servidor
-                response = client.get(f"{backend_url}/api/vendas/")
+                vendas_dia = 0.0
+                vendas_mes = 0.0
                 
-                if response.status_code == 200:
-                    vendas = response.json()
-                    print(f"📥 Recebidas {len(vendas)} vendas do servidor")
-                    
-                    # Calcular vendas do dia e mês
-                    hoje = datetime.now().date()
-                    mes_atual = hoje.strftime('%Y-%m')
-                    
-                    vendas_dia = 0.0
-                    vendas_mes = 0.0
-                    
-                    for venda in vendas:
-                        try:
-                            # Parse da data da venda - usar created_at se data_venda não existir
-                            data_venda_str = venda.get('data_venda', '') or venda.get('created_at', '')
-                            
-                            if not data_venda_str:
-                                print(f"⚠️ Venda {venda.get('id', 'N/A')} sem data - pulando")
-                                continue
-                            
-                            # Processar data ISO format (created_at) ou date format (data_venda)
-                            if 'T' in data_venda_str:
-                                data_venda = datetime.fromisoformat(data_venda_str.replace('Z', '+00:00')).date()
-                            else:
-                                data_venda = datetime.strptime(data_venda_str[:10], '%Y-%m-%d').date()
-                            
-                            total = float(venda.get('total', 0))
-                            cancelada = venda.get('cancelada', False)
-                            
-                            # Ignorar vendas canceladas
-                            if cancelada:
-                                continue
-                            
-                            # Vendas do mês
-                            if data_venda.strftime('%Y-%m') == mes_atual:
-                                vendas_mes += total
-                                
-                                # Vendas do dia
-                                if data_venda == hoje:
-                                    vendas_dia += total
-                                    
-                        except Exception as e:
-                            print(f"⚠️ Erro ao processar venda {venda.get('id', 'N/A')}: {e}")
-                            continue
-                    
-                    return {
+                # Buscar vendas do dia usando endpoint de métricas
+                try:
+                    response_dia = client.get(f"{backend_url}/api/metricas/vendas-dia")
+                    if response_dia.status_code == 200:
+                        data_dia = response_dia.json()
+                        vendas_dia = float(data_dia.get('total', 0.0))
+                        print(f"📊 Vendas do dia do servidor: MT {vendas_dia:.2f}")
+                    else:
+                        print(f"❌ Erro ao buscar vendas do dia: {response_dia.status_code}")
+                except Exception as e:
+                    print(f"❌ Erro ao buscar vendas do dia: {e}")
+                
+                # Buscar vendas do mês usando endpoint de métricas
+                try:
+                    response_mes = client.get(f"{backend_url}/api/metricas/vendas-mes")
+                    if response_mes.status_code == 200:
+                        data_mes = response_mes.json()
+                        vendas_mes = float(data_mes.get('total', 0.0))
+                        print(f"📊 Vendas do mês do servidor: MT {vendas_mes:.2f}")
+                    else:
+                        print(f"❌ Erro ao buscar vendas do mês: {response_mes.status_code}")
+                except Exception as e:
+                    print(f"❌ Erro ao buscar vendas do mês: {e}")
+                
+                if vendas_dia > 0 or vendas_mes > 0:
+                    resultado = {
                         'vendas_dia': vendas_dia,
                         'vendas_mes': vendas_mes
                     }
+                    print(f"📊 Vendas do servidor - Dia: MT {vendas_dia:.2f}, Mês: MT {vendas_mes:.2f}")
+                    return resultado
                 else:
-                    print(f"❌ Erro ao buscar vendas: {response.status_code}")
+                    print("📭 Nenhuma venda encontrada no servidor")
                     return None
                     
         except Exception as e:

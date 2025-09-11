@@ -51,9 +51,12 @@ class VendaRepository:
     def _is_online(self) -> bool:
         """Verifica se o backend está online (versão síncrona)."""
         try:
-            response = httpx.get(f"{self.backend_url}/healthz", timeout=3.0)
+            # Usar URL base sem /api para healthcheck
+            base_url = self.backend_url.replace('/api', '')
+            healthcheck_url = f"{base_url}/healthz"
+            response = httpx.get(healthcheck_url, timeout=3.0)
             is_online = response.status_code == 200
-            print(f"🔗 Status conexão: {'ONLINE' if is_online else 'OFFLINE'} - {self.backend_url}/healthz")
+            print(f"🔗 Status conexão: {'ONLINE' if is_online else 'OFFLINE'} - {healthcheck_url}")
             return is_online
         except Exception as e:
             print(f"❌ Erro ao verificar conexão: {e}")
