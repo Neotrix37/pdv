@@ -639,6 +639,8 @@ class VendaRepository:
                                     print(f"[VENDAS][PULL] Erro ao inserir item da venda {venda_uuid}: {it_e}")
 
                             conn.commit()
+                        except Exception as v_e:
+                            print(f"[VENDAS][PULL] Erro ao processar venda {v.get('uuid', 'N/A')}: {v_e}")
 
                 print(f"[VENDAS][PULL] Concluído. Vendas novas/atualizadas: {recebidas}")
                 return recebidas
