@@ -533,6 +533,20 @@ class DashboardView(ft.UserControl, TranslationMixin):
         finally:
             self._web_last_fetch_ts = time.time()
             self._web_fetch_inflight = False
+            # Programar uma nova tentativa automática após 5s quando estamos em modo cache
+            try:
+                def _delayed_retry():
+                    try:
+                        time.sleep(5)
+                        # Reinvocar busca (respeita throttle/single-flight)
+                        self._fetch_web_dashboard_numbers_sync()
+                    except Exception:
+                        pass
+                # Apenas agendar se o badge de cache estiver visível (indicando fallback)
+                if getattr(self.online_badge, 'visible', False):
+                    threading.Thread(target=_delayed_retry, daemon=True).start()
+            except Exception:
+                pass
 
     def build(self):
         # Diagnóstico: exibir permissões do usuário
