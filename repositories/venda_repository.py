@@ -537,8 +537,8 @@ class VendaRepository:
                                 print("[VENDAS][PULL] Venda sem UUID/ID - ignorando")
                                 continue
 
-                            # Checar se existe localmente por UUID
-                            cur.execute("SELECT id, updated_at FROM vendas WHERE uuid = ?", (venda_uuid,))
+                            # Checar se existe localmente por UUID (sem depender de updated_at)
+                            cur.execute("SELECT id FROM vendas WHERE uuid = ?", (venda_uuid,))
                             row = cur.fetchone()
 
                             # Preparar campos principais (com defaults e normalizações)

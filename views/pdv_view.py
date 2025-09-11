@@ -1633,29 +1633,56 @@ class PDVView(ft.UserControl):
                     
                     # Inserir item
                     cursor = self.db.conn.cursor()
+                    # Garantir coluna peso_kg (já criada no init, mas não custa tentar)
+                    try:
+                        self.db.conn.execute("PRAGMA table_info(itens_venda)")
+                    except Exception:
+                        pass
+
+                    peso_kg_item = float(item.get('peso_kg', 0) or 0)
                     cursor.execute("""
                         INSERT INTO itens_venda (
                             venda_id, produto_id, quantidade,
                             preco_unitario, preco_custo_unitario,
-                            subtotal
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            subtotal, peso_kg
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (
                         venda_id,
                         item['id'],
                         item['quantidade'],
                         item['preco'],
                         preco_custo,
-                        item['subtotal']
+                        item['subtotal'],
+                        peso_kg_item
                     ))
                     
                     # Atualizar estoque e marcar para sincronização
+                    # Determinar decremento considerando venda por peso
+                    try:
+                        cur2 = self.db.conn.cursor()
+                        cur2.execute("SELECT venda_por_peso, unidade_medida FROM produtos WHERE id = ?", (item['id'],))
+                        row = cur2.fetchone()
+                        venda_por_peso = int(row[0]) if row and row[0] is not None else 0
+                        unidade_medida = (row[1] or 'un') if row else 'un'
+                    except Exception:
+                        venda_por_peso = 0
+                        unidade_medida = 'un'
+
+                    decremento = float(item.get('peso_kg', 0) or 0.0)
+                    if decremento <= 0.0:
+                        # Se não há peso informado, usa quantidade
+                        try:
+                            decremento = float(item.get('quantidade', 0) or 0)
+                        except Exception:
+                            decremento = 0.0
+
                     cursor.execute("""
                         UPDATE produtos 
                         SET estoque = estoque - ?,
                             updated_at = CURRENT_TIMESTAMP,
                             synced = 0
                         WHERE id = ?
-                    """, (item['quantidade'], item['id']))
+                    """, (decremento, item['id']))
                 
                 # Commit da transação
                 self.db.conn.commit()
