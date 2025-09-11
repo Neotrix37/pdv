@@ -536,18 +536,25 @@ class ProdutosView(ft.UserControl, TranslationMixin):
     def excluir_produto(self, e):
         try:
             produto = e.control.data
-            self.db.execute(
-                "UPDATE produtos SET ativo = 0 WHERE id = ?",
-                (produto['id'],)
-            )
+            # Excluir via repositório híbrido (faz soft delete local e tenta deletar no servidor)
+            sucesso = False
+            try:
+                sucesso = self.produto_repository.delete(produto['id'])
+            except Exception as repo_err:
+                print(f"[EXCLUIR] Falha no repositório ao excluir produto ID {produto['id']}: {repo_err}")
             
-            # Atualizar a lista imediatamente após excluir
+            # Atualizar a lista imediatamente após excluir (tempo real)
             self.carregar_produtos()
+            if hasattr(self, 'page') and self.page:
+                try:
+                    self.page.update()
+                except Exception as ui_err:
+                    print(f"[UI] Aviso ao atualizar após exclusão: {ui_err}")
             
             self.page.show_snack_bar(
                 ft.SnackBar(
-                    content=ft.Text("✅ Produto excluído com sucesso!"),
-                    bgcolor=ft.colors.GREEN,
+                    content=ft.Text("✅ Produto excluído com sucesso!" if sucesso else "⚠️ Produto marcado como excluído localmente."),
+                    bgcolor=ft.colors.GREEN if sucesso else ft.colors.AMBER,
                     duration=3000
                 )
             )

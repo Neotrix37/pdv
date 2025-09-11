@@ -581,6 +581,26 @@ class Database:
                 """)
             
             self.conn.commit()
+
+            # Criar tabela de change_log (centralizada) para sincronização híbrida
+            try:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS change_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        entity_type TEXT NOT NULL,
+                        entity_id TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        data_json TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT,
+                        status TEXT DEFAULT 'pending'
+                    )
+                    """
+                )
+                self.conn.commit()
+            except Exception as e:
+                print(f"AVISO: Falha ao garantir tabela change_log: {e}")
             
             # Criar tabela printer_config se não existir
             cursor.execute("""

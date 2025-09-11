@@ -172,7 +172,37 @@ class ProdutoRepository:
             try:
                 response = httpx.get(f"{self.api_base}/produtos/", timeout=5.0)
                 if response.status_code == 200:
-                    return response.json()
+                    server_list = response.json() or []
+                    # Filtrar itens que foram soft-deletados localmente (ativo = 0)
+                    # e também aqueles com DELETE pendente no change_log
+                    try:
+                        soft_deleted: set[str] = set()
+                        pending_delete: set[str] = set()
+                        with sqlite3.connect(str(self.db_path)) as conn:
+                            cur = conn.cursor()
+                            # Coletar UUIDs soft-deletados localmente
+                            cur.execute("SELECT TRIM(COALESCE(uuid,'')) FROM produtos WHERE ativo = 0 AND TRIM(COALESCE(uuid,'')) <> ''")
+                            soft_deleted = {row[0] for row in cur.fetchall() if row and row[0]}
+                            # Coletar UUIDs com DELETE pendente
+                            try:
+                                cur.execute(
+                                    """
+                                    SELECT entity_id FROM change_log
+                                    WHERE entity_type = 'produtos' AND operation = 'DELETE' AND status = 'pending'
+                                    """
+                                )
+                                pending_delete = {row[0] for row in cur.fetchall() if row and row[0]}
+                            except Exception:
+                                pending_delete = set()
+                    except Exception as flt_err:
+                        print(f"[GET_ALL] Falha ao filtrar soft-deletes/pending deletes: {flt_err}")
+                        soft_deleted, pending_delete = set(), set()
+
+                    def get_uuid(p: Dict[str, Any]) -> str:
+                        return str((p.get('uuid') or p.get('id') or '')).strip()
+
+                    filtered = [p for p in server_list if get_uuid(p) not in soft_deleted and get_uuid(p) not in pending_delete]
+                    return filtered
             except Exception as e:
                 print(f"Erro ao buscar produtos do servidor: {e}")
         
@@ -249,7 +279,7 @@ class ProdutoRepository:
         return self._get_local_produto_by_uuid(produto_uuid)
     
     def _get_local_produto_by_uuid(self, produto_uuid: str) -> Optional[Dict[str, Any]]:
-        """Obtém produto por UUID do banco local."""
+        """Obtém produto por UUID do banco local (SEM filtrar ativo) para lógica de sync."""
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
@@ -268,7 +298,7 @@ class ProdutoRepository:
                                unidade_medida, ativo, created_at, updated_at,
                                COALESCE(uuid, '') as uuid, COALESCE(synced, 0) as synced
                         FROM produtos 
-                        WHERE uuid = ? AND ativo = 1
+                        WHERE uuid = ?
                     """, (produto_uuid,))
                 else:
                     cursor.execute("""
@@ -276,7 +306,7 @@ class ProdutoRepository:
                                estoque, estoque_minimo, categoria_id, venda_por_peso,
                                unidade_medida, ativo, created_at, updated_at, uuid
                         FROM produtos 
-                        WHERE uuid = ? AND ativo = 1
+                        WHERE uuid = ?
                     """, (produto_uuid,))
                 
                 row = cursor.fetchone()
@@ -918,6 +948,10 @@ class ProdutoRepository:
                                 print(f"Produto novo inserido: {produto_servidor.get('nome', 'Sem nome')}")
                         else:
                             # Produto existe - verificar se precisa atualizar
+                            # Respeitar soft delete local: nao reativar/atualizar se ativo = 0
+                            if int(produto_local.get('ativo', 1)) == 0:
+                                print(f"Produto {produto_servidor.get('nome','')} esta soft-deletado localmente - mantendo inativo")
+                                continue
                             if self._produto_servidor_mais_recente(produto_local, produto_servidor):
                                 # Garantir uuid no payload para manter consistência local
                                 produto_servidor = {**produto_servidor, 'uuid': servidor_uuid}
