@@ -978,6 +978,9 @@ class ProdutoRepository:
                 produtos_recebidos = 0
                 produtos_atualizados = 0
                 
+                # Construir conjunto de UUIDs vindos do servidor para rastrear deleções server-side
+                uuids_servidor = set()
+
                 for produto_servidor in produtos_servidor:
                     try:
                         # Extrair identificador do servidor: aceitar uuid ou id
@@ -986,6 +989,7 @@ class ProdutoRepository:
                             nome_dbg = produto_servidor.get('nome', 'N/A')
                             print(f"Produto {nome_dbg} sem id/uuid - pulando")
                             continue
+                        uuids_servidor.add(servidor_uuid)
                         
                         # Verificar se produto já existe localmente pelo UUID
                         produto_local = self._get_local_produto_by_uuid(servidor_uuid)
@@ -1023,8 +1027,9 @@ class ProdutoRepository:
                             # Produto existe - verificar se precisa atualizar
                             # Respeitar soft delete local: nao reativar/atualizar se ativo = 0
                             if int(produto_local.get('ativo', 1)) == 0:
-                                print(f"Produto {produto_servidor.get('nome','')} esta soft-deletado localmente - mantendo inativo")
+                                print(f"Produto {produto_local.get('nome','')} está soft-deletado localmente - mantendo inativo")
                                 continue
+                            
                             if self._produto_servidor_mais_recente(produto_local, produto_servidor):
                                 # Garantir uuid no payload para manter consistência local
                                 produto_servidor = {**produto_servidor, 'uuid': servidor_uuid}
@@ -1036,7 +1041,37 @@ class ProdutoRepository:
                         print(f"Erro ao processar produto {produto_servidor.get('nome', 'N/A')}: {e}")
                 
                 total_recebidos = produtos_recebidos + produtos_atualizados
-                print(f"Pull concluído: {produtos_recebidos} novos, {produtos_atualizados} atualizados")
+                # Após processar todos os itens do servidor: detectar deleções feitas no backend
+                try:
+                    import sqlite3 as _sql
+                    with _sql.connect(str(self.db_path)) as _conn:
+                        _cur = _conn.cursor()
+                        # Marcar como inativos itens que eram sincronizados, estão ativos localmente, possuem UUID
+                        # e que não estão no conjunto de UUIDs retornados pelo servidor (deletados no backend)
+                        if uuids_servidor:
+                            placeholders = ",".join(["?"] * len(uuids_servidor))
+                            sql = f"""
+                                UPDATE produtos
+                                SET ativo = 0, updated_at = ?, synced = COALESCE(synced, 1)
+                                WHERE ativo = 1
+                                  AND COALESCE(TRIM(uuid),'') <> ''
+                                  AND synced = 1
+                                  AND TRIM(uuid) NOT IN ({placeholders})
+                            """
+                            params = [datetime.now().isoformat(), *list(uuids_servidor)]
+                            _cur.execute(sql, params)
+                            afetados = _cur.rowcount
+                            _conn.commit()
+                            if afetados:
+                                print(f"[PULL] Marcados {afetados} produtos como inativos (deletados no servidor)")
+                        else:
+                            # Se o servidor não retornou nenhum produto, não assumimos deleção em massa
+                            pass
+                except Exception as del_err:
+                    print(f"[PULL] Falha ao refletir deleções do servidor: {del_err}")
+
+                print(f"PULL concluído. Recebidos: {produtos_recebidos}, Atualizados: {produtos_atualizados}")
+                total_recebidos = int(produtos_recebidos) + int(produtos_atualizados)
                 return total_recebidos
                 
         except Exception as e:

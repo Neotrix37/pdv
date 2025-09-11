@@ -2038,6 +2038,20 @@ class DashboardView(ft.UserControl, TranslationMixin):
                             duration=3000,
                         )
                     )
+                    # Recalcular e reconstruir cards imediatamente
+                    try:
+                        self.atualizar_valores(resetar=False)
+                        self._force_rebuild_cards(resetar=False)
+                        if hasattr(self, 'page') and self.page:
+                            self.page.update()
+                        # Atualizar métricas a partir do servidor (modo online)
+                        try:
+                            import threading
+                            threading.Thread(target=self._fetch_web_dashboard_numbers_sync, daemon=True).start()
+                        except Exception:
+                            pass
+                    except Exception as _:
+                        pass
                 elif resultado.get("status") == "offline":
                     self.page.show_snack_bar(
                         ft.SnackBar(
@@ -2046,6 +2060,20 @@ class DashboardView(ft.UserControl, TranslationMixin):
                             duration=3000,
                         )
                     )
+                    # Mesmo offline, recalcular números locais
+                    try:
+                        self.atualizar_valores(resetar=False)
+                        self._force_rebuild_cards(resetar=False)
+                        if hasattr(self, 'page') and self.page:
+                            self.page.update()
+                        # Tentar também buscar métricas do servidor (caso volte rapidamente)
+                        try:
+                            import threading
+                            threading.Thread(target=self._fetch_web_dashboard_numbers_sync, daemon=True).start()
+                        except Exception:
+                            pass
+                    except Exception as _:
+                        pass
                 else:
                     self.page.show_snack_bar(
                         ft.SnackBar(
@@ -2054,6 +2082,20 @@ class DashboardView(ft.UserControl, TranslationMixin):
                             duration=5000,
                         )
                     )
+                    # Ainda assim, tentar atualizar UI com o que houver localmente
+                    try:
+                        self.atualizar_valores(resetar=False)
+                        self._force_rebuild_cards(resetar=False)
+                        if hasattr(self, 'page') and self.page:
+                            self.page.update()
+                        # Requisitar métricas do servidor para garantir consistência
+                        try:
+                            import threading
+                            threading.Thread(target=self._fetch_web_dashboard_numbers_sync, daemon=True).start()
+                        except Exception:
+                            pass
+                    except Exception as _:
+                        pass
                 
             except Exception as ex:
                 # Mostrar mensagem de erro
