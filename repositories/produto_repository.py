@@ -1149,8 +1149,8 @@ class ProdutoRepository:
                         'descricao': produto['descricao'] or '',
                         'preco_custo': produto['preco_custo'] or 0,
                         'preco_venda': produto['preco_venda'] or 0,
-                        'estoque': int(produto['estoque'] or 0),  # Converter para inteiro
-                        'estoque_minimo': int(produto['estoque_minimo'] or 0),  # Converter para inteiro
+                        'estoque': float(produto['estoque'] or 0.0),  # Preservar frações
+                        'estoque_minimo': float(produto['estoque_minimo'] or 0.0),
                         'categoria_id': produto['categoria_id'],
                         'venda_por_peso': produto['venda_por_peso'] or False,
                         'unidade_medida': produto['unidade_medida'] or 'un'
