@@ -1154,14 +1154,25 @@ class VendaRepository:
             data_parte = data_venda
             hora_parte = "00:00:00"
         
-        # Para vendas do servidor sem usuario_id, usar valor padrão
+        # Para vendas do servidor, buscar informações do usuário
         usuario_id = venda.get('usuario_id')
-        if usuario_id is None:
-            # Usar ID 1 como padrão para vendas sem usuário específico
-            usuario_id = 1
-            vendedor = 'Sistema'
-        else:
-            vendedor = venda.get('vendedor', f'Usuário {usuario_id}')
+        vendedor = 'Sistema'
+        
+        if usuario_id:
+            # Buscar nome do usuário no banco local
+            try:
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT nome FROM usuarios WHERE uuid = ?", (str(usuario_id),))
+                    user_row = cursor.fetchone()
+                    if user_row:
+                        vendedor = user_row['nome']
+                    else:
+                        vendedor = f'Usuário {str(usuario_id)[:8]}'
+            except Exception as e:
+                print(f"❌ Erro ao buscar usuário {usuario_id}: {e}")
+                vendedor = f'Usuário {str(usuario_id)[:8]}'
         
         return {
             'id': venda.get('id'),

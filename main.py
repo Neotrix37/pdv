@@ -545,9 +545,8 @@ if __name__ == "__main__":
         "web_renderer": "auto"
     }
     
-    # Se não for modo desktop, abrir no navegador
-    if not desktop_mode:
-        app_settings["view"] = ft.WEB_BROWSER
+    # Forçar modo desktop para executável
+    app_settings["view"] = ft.FLET_APP_HIDDEN
     
     # Iniciar o aplicativo
     ft.app(**app_settings)
