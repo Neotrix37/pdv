@@ -39,8 +39,20 @@ class ClienteRepository:
         return base_url + '/api'
     
     def _get_database_path(self) -> Path:
-        """Obtém o caminho do banco de dados baseado no sistema operacional."""
-        return Path(__file__).parent.parent / 'database' / 'sistema.db'
+        """Obtém o caminho do banco de dados unificado com Database (APPDATA no Windows)."""
+        try:
+            import platform, os
+            from pathlib import Path as _Path
+            sistema = platform.system().lower()
+            if sistema == 'windows' and 'APPDATA' in os.environ:
+                app_data_db_dir = _Path(os.environ['APPDATA']) / 'SistemaGestao' / 'database'
+            else:
+                app_data_db_dir = _Path(os.path.expanduser('~')) / '.sistemagestao' / 'database'
+            app_data_db_dir.mkdir(parents=True, exist_ok=True)
+            return app_data_db_dir / 'sistema.db'
+        except Exception:
+            # Fallback para o caminho antigo do projeto (evitar crash)
+            return Path(__file__).parent.parent / 'database' / 'sistema.db'
     
     def _is_online(self) -> bool:
         """Verifica se o backend está online (versão síncrona)."""
@@ -91,6 +103,35 @@ class ClienteRepository:
                 migration_helper.migrate_clientes_table()
         except Exception as e:
             print(f"[CLIENTE_REPO] Erro durante migração: {e}")
+        # Garantir que a tabela clientes exista mesmo sem MigrationHelper
+        try:
+            self._ensure_clientes_table()
+        except Exception as ee:
+            print(f"[CLIENTE_REPO] Aviso ao garantir tabela clientes: {ee}")
+
+    def _ensure_clientes_table(self):
+        """Garante a existência da tabela clientes no SQLite atual."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS clientes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uuid TEXT UNIQUE,
+                    nome TEXT NOT NULL,
+                    nuit TEXT,
+                    telefone TEXT,
+                    email TEXT,
+                    endereco TEXT,
+                    especial INTEGER DEFAULT 0,
+                    desconto_divida REAL DEFAULT 0,
+                    synced INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
     
     def get_all(self) -> List[Dict[str, Any]]:
         """Obtém todos os clientes (híbrido: servidor primeiro, fallback local)."""
@@ -190,6 +231,11 @@ class ClienteRepository:
     
     def _create_local_cliente(self, cliente_data: Dict[str, Any]) -> Dict[str, Any]:
         """Cria cliente no banco local."""
+        # Garantir tabela antes de inserir
+        try:
+            self._ensure_clientes_table()
+        except Exception:
+            pass
         with sqlite3.connect(str(self.db_path)) as conn:
             cursor = conn.cursor()
             cursor.execute("""
