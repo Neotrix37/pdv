@@ -1,4 +1,5 @@
 import asyncio
+import time
 import flet as ft
 from datetime import datetime
 from database.database import Database
@@ -96,6 +97,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
             weight=ft.FontWeight.BOLD,
             color=ft.colors.BLACK
         )
+        # Cache simples para métricas web (usado em fallback durante cold start)
+        self._web_metrics_cache = {
+            "vendas_dia": total_vendas_dia,
+            "vendas_mes": total_vendas_mes,
+            "lucro_dia": lucro_dia,
+            "lucro_mes": lucro_mes,
+        }
         
         print(f"Build - Vendas mês: MT {total_vendas_mes:.2f}")
         print(f"Build - Lucro mês: MT {lucro_mes:.2f}")
@@ -395,77 +403,82 @@ class DashboardView(ft.UserControl, TranslationMixin):
         return base + '/api'
 
     def _fetch_web_dashboard_numbers_sync(self):
-        """Versão síncrona: busca números de vendas no backend e atualiza os cards (para web)."""
+        """Versão síncrona resiliente: busca números de vendas no backend com retry/backoff e cache."""
         api_base = self._get_api_base()
-        try:
-            hoje = datetime.now().date().isoformat()
-            ano_mes = datetime.now().strftime('%Y-%m')
+        hoje = datetime.now().date().isoformat()
+        ano_mes = datetime.now().strftime('%Y-%m')
 
-            vendas_dia = 0.0
-            vendas_mes = 0.0
-            lucro_dia = 0.0
-            lucro_mes = 0.0
+        backoffs = [0.3, 1.0]  # segundos
+        attempts = 3
 
-            # Preferir endpoints de métricas (com fallback)
-            url_dia_1 = f"{api_base}/metricas/vendas-dia"
-            url_mes_1 = f"{api_base}/metricas/vendas-mes"
-            with httpx.Client(timeout=10.0) as client:
-                try:
-                    print(f"[WEB] Dashboard buscando métricas em: {url_dia_1} e {url_mes_1}")
+        last_error = None
+        for attempt in range(attempts):
+            try:
+                vendas_dia = 0.0
+                vendas_mes = 0.0
+                lucro_dia = 0.0
+                lucro_mes = 0.0
+
+                url_dia_1 = f"{api_base}/metricas/vendas-dia"
+                url_mes_1 = f"{api_base}/metricas/vendas-mes"
+                print(f"[WEB] Dashboard buscando métricas (tentativa {attempt+1}) em: {url_dia_1} e {url_mes_1}")
+                with httpx.Client(timeout=10.0) as client:
                     resp_dia = client.get(url_dia_1)
                     resp_mes = client.get(url_mes_1)
-                    if resp_dia.status_code == 200:
-                        payload = resp_dia.json() or {}
-                        vendas_dia = float(payload.get('total') or 0.0)
-                    else:
-                        print(f"[WEB] Falha ao buscar vendas-dia ({resp_dia.status_code}) em {url_dia_1}")
-                    if resp_mes.status_code == 200:
-                        payload = resp_mes.json() or {}
-                        vendas_mes = float(payload.get('total') or 0.0)
-                    else:
-                        print(f"[WEB] Falha ao buscar vendas-mes ({resp_mes.status_code}) em {url_mes_1}")
-                except Exception as ex:
-                    print(f"[WEB] Erro ao buscar métricas: {ex}. Fallback para listar vendas...")
-                    # Fallback: listar vendas e somar
-                    url1 = f"{api_base}/vendas/"
-                    url2 = f"{api_base}/vendas"
-                    try:
-                        resp = client.get(url1)
-                        if resp.status_code == 404:
-                            resp = client.get(url2)
-                        if resp.status_code == 200:
-                            vendas = resp.json() or []
-                            for v in vendas:
-                                status = (v.get('status') or '').lower()
-                                if status == 'anulada':
-                                    continue
-                                total = float(v.get('total') or 0)
-                                data_venda = v.get('data_venda') or ''
-                                if data_venda.startswith(hoje):
-                                    vendas_dia += total
-                                if data_venda.startswith(ano_mes):
-                                    vendas_mes += total
-                        else:
-                            print(f"[WEB] Falha ao buscar vendas no fallback ({resp.status_code}) em {url1} e {url2}")
-                    except Exception as ex2:
-                        print(f"[WEB] Erro no fallback listar vendas: {ex2}")
+                    if resp_dia.status_code != 200 or resp_mes.status_code != 200:
+                        raise Exception(f"HTTP {resp_dia.status_code}/{resp_mes.status_code}")
 
-            # Atualizar textos
+                    payload = resp_dia.json() or {}
+                    vendas_dia = float(payload.get('total') or 0.0)
+                    payload = resp_mes.json() or {}
+                    vendas_mes = float(payload.get('total') or 0.0)
+
+                # Sucesso: atualizar cache
+                self._web_metrics_cache["vendas_dia"] = vendas_dia
+                self._web_metrics_cache["vendas_mes"] = vendas_mes
+                self._web_metrics_cache["lucro_dia"] = lucro_dia
+                self._web_metrics_cache["lucro_mes"] = lucro_mes
+
+                # Atualizar textos e UI
+                self.vendas_dia.value = f"MT {vendas_dia:.2f}"
+                self.vendas_mes.value = f"MT {vendas_mes:.2f}"
+                if self._flag_true(self.usuario.get('is_admin')):
+                    self.lucro_dia.value = f"MT {lucro_dia:.2f}"
+                    self.lucro_mes.value = f"MT {lucro_mes:.2f}"
+                try:
+                    self.update()
+                    if hasattr(self, 'page') and self.page:
+                        self.page.update()
+                except Exception:
+                    pass
+                return
+            except Exception as ex:
+                last_error = ex
+                if attempt < attempts - 1:
+                    time.sleep(backoffs[min(attempt, len(backoffs)-1)])
+                    continue
+
+        # Fallback final: usar cache e tentar somar via /vendas apenas se necessário
+        try:
+            vendas_dia = float(self._web_metrics_cache.get("vendas_dia", 0.0))
+            vendas_mes = float(self._web_metrics_cache.get("vendas_mes", 0.0))
+            lucro_dia = float(self._web_metrics_cache.get("lucro_dia", 0.0))
+            lucro_mes = float(self._web_metrics_cache.get("lucro_mes", 0.0))
+
             self.vendas_dia.value = f"MT {vendas_dia:.2f}"
             self.vendas_mes.value = f"MT {vendas_mes:.2f}"
             if self._flag_true(self.usuario.get('is_admin')):
                 self.lucro_dia.value = f"MT {lucro_dia:.2f}"
                 self.lucro_mes.value = f"MT {lucro_mes:.2f}"
-            # Atualizar UI
             try:
                 self.update()
                 if hasattr(self, 'page') and self.page:
                     self.page.update()
             except Exception:
                 pass
-
+            print(f"[WEB] Métricas via cache (fallback). Último erro: {last_error}")
         except Exception as e:
-            print(f"Erro ao buscar números do dashboard (web): {e}")
+            print(f"Erro ao atualizar métricas (fallback): {e}")
 
     def build(self):
         # Diagnóstico: exibir permissões do usuário
