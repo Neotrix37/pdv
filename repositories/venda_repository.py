@@ -499,8 +499,145 @@ class VendaRepository:
     async def _pull_vendas_do_servidor(self) -> int:
         """Busca vendas do servidor e atualiza localmente."""
         print("FASE 1: Buscando vendas do servidor...")
-        # TODO: Implementar pull de vendas do servidor se necessário
-        return 0
+        recebidas = 0
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{self.api_base}/vendas/", timeout=10.0)
+                if resp.status_code != 200:
+                    print(f"[VENDAS][PULL] Erro HTTP {resp.status_code}: {resp.text}")
+                    return 0
+
+                vendas_srv = resp.json() or []
+                print(f"[VENDAS][PULL] Encontradas {len(vendas_srv)} vendas no servidor")
+
+                with sqlite3.connect(str(self.db_path)) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+
+                    # Garantir colunas uuid/synced em vendas
+                    try:
+                        cur.execute("PRAGMA table_info(vendas)")
+                        cols = [c[1] for c in cur.fetchall()]
+                        if 'uuid' not in cols:
+                            cur.execute("ALTER TABLE vendas ADD COLUMN uuid TEXT")
+                        if 'synced' not in cols:
+                            cur.execute("ALTER TABLE vendas ADD COLUMN synced INTEGER DEFAULT 0")
+                        conn.commit()
+                    except Exception as mig_e:
+                        print(f"[VENDAS][PULL] Aviso ao garantir colunas: {mig_e}")
+
+                    for v in vendas_srv:
+                        try:
+                            venda_uuid = (v.get('uuid') or v.get('id') or '').strip()
+                            if not venda_uuid:
+                                print("[VENDAS][PULL] Venda sem UUID/ID - ignorando")
+                                continue
+
+                            # Checar se existe localmente por UUID
+                            cur.execute("SELECT id, updated_at FROM vendas WHERE uuid = ?", (venda_uuid,))
+                            row = cur.fetchone()
+
+                            # Preparar campos principais (com defaults e normalizações)
+                            data_venda = v.get('data_venda') or datetime.now().isoformat()
+                            total = float(v.get('total') or 0.0)
+                            forma_pagamento = v.get('forma_pagamento') or 'Dinheiro'
+                            valor_recebido = float(v.get('valor_recebido') or 0.0)
+                            troco = float(v.get('troco') or 0.0)
+                            status = v.get('status') or 'concluida'
+                            motivo_alteracao = v.get('motivo_alteracao') or ''
+                            alterado_por = v.get('alterado_por')
+                            data_alteracao = v.get('data_alteracao')
+                            origem = v.get('origem') or 'servidor'
+                            valor_original_divida = float(v.get('valor_original_divida') or 0.0)
+                            desconto_aplicado_divida = float(v.get('desconto', v.get('desconto_aplicado_divida') or 0.0))
+
+                            if row is None:
+                                # Inserir venda nova
+                                cur.execute(
+                                    """
+                                    INSERT INTO vendas (
+                                        usuario_id, total, forma_pagamento, valor_recebido, troco,
+                                        data_venda, status, motivo_alteracao, alterado_por, data_alteracao,
+                                        origem, valor_original_divida, desconto_aplicado_divida, uuid, synced
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                                    """,
+                                    (
+                                        v.get('usuario_id'), total, forma_pagamento, valor_recebido, troco,
+                                        data_venda, status, motivo_alteracao, alterado_por, data_alteracao,
+                                        origem, valor_original_divida, desconto_aplicado_divida, venda_uuid
+                                    )
+                                )
+                                venda_id_local = cur.lastrowid
+                                conn.commit()
+                                recebidas += 1
+                            else:
+                                # Atualizar venda existente
+                                venda_id_local = row['id']
+                                cur.execute(
+                                    """
+                                    UPDATE vendas SET
+                                        usuario_id = ?, total = ?, forma_pagamento = ?, valor_recebido = ?, troco = ?,
+                                        status = ?, motivo_alteracao = ?, alterado_por = ?, data_alteracao = ?,
+                                        origem = ?, valor_original_divida = ?, desconto_aplicado_divida = ?, synced = 1
+                                    WHERE id = ?
+                                    """,
+                                    (
+                                        v.get('usuario_id'), total, forma_pagamento, valor_recebido, troco,
+                                        status, motivo_alteracao, alterado_por, data_alteracao,
+                                        origem, valor_original_divida, desconto_aplicado_divida, venda_id_local
+                                    )
+                                )
+                                conn.commit()
+
+                            # Itens da venda
+                            itens = v.get('itens') or []
+
+                            # Limpar itens antigos e re-inserir (idempotente por uuid)
+                            try:
+                                cur.execute("DELETE FROM itens_venda WHERE venda_id = ?", (venda_id_local,))
+                            except Exception as di_e:
+                                print(f"[VENDAS][PULL] Aviso ao limpar itens: {di_e}")
+
+                            for it in itens:
+                                try:
+                                    prod_uuid = str(it.get('produto_id') or '').strip()
+                                    if not prod_uuid:
+                                        continue
+                                    # Mapear produto UUID -> ID local
+                                    cur.execute("SELECT id FROM produtos WHERE uuid = ?", (prod_uuid,))
+                                    prod_row = cur.fetchone()
+                                    if not prod_row:
+                                        # Produto não existe localmente; pular item (ou poderia criar placeholder)
+                                        print(f"[VENDAS][PULL] Produto {prod_uuid} não encontrado localmente - pulando item")
+                                        continue
+                                    produto_id_local = prod_row['id']
+
+                                    quantidade = int(it.get('quantidade') or 0) or 1
+                                    preco_unitario = float(it.get('preco_unitario') or 0.0)
+                                    subtotal = float(it.get('subtotal') or 0.0)
+                                    peso_kg = float(it.get('peso_kg') or 0.0)
+
+                                    cur.execute(
+                                        """
+                                        INSERT INTO itens_venda (
+                                            venda_id, produto_id, quantidade, preco_unitario, preco_custo_unitario, subtotal, peso_kg
+                                        ) VALUES (?, ?, ?, ?, COALESCE((SELECT preco_custo FROM produtos WHERE id = ?), 0), ?, ?)
+                                        """,
+                                        (
+                                            venda_id_local, produto_id_local, quantidade, preco_unitario, produto_id_local, subtotal, peso_kg
+                                        )
+                                    )
+                                except Exception as it_e:
+                                    print(f"[VENDAS][PULL] Erro ao inserir item da venda {venda_uuid}: {it_e}")
+
+                            conn.commit()
+
+                print(f"[VENDAS][PULL] Concluído. Vendas novas/atualizadas: {recebidas}")
+                return recebidas
+
+        except Exception as e:
+            print(f"[VENDAS][PULL] Erro: {e}")
+            return 0
     
     async def _sincronizar_vendas_antigas(self) -> int:
         """Sincroniza vendas antigas não sincronizadas com o servidor."""
