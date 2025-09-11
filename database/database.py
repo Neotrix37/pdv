@@ -2406,7 +2406,14 @@ class Database:
             
             result = self.fetchone(f"""
                 SELECT 
-                    COALESCE(SUM(iv.subtotal - (iv.preco_custo_unitario * iv.quantidade)), 0) as lucro
+                    COALESCE(SUM(
+                        iv.subtotal - (
+                            iv.preco_custo_unitario * CASE 
+                                WHEN COALESCE(iv.peso_kg, 0) > 0 THEN iv.peso_kg 
+                                ELSE iv.quantidade 
+                            END
+                        )
+                    ), 0) as lucro
                 FROM vendas v
                 JOIN itens_venda iv ON v.id = iv.venda_id
                 WHERE 1=1 {where_status}
@@ -2422,7 +2429,14 @@ class Database:
                 SELECT COALESCE(SUM(
                     CASE 
                         WHEN v.status = 'Anulada' THEN 0 
-                        ELSE (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade))
+                        ELSE (
+                            iv.subtotal - (
+                                iv.preco_custo_unitario * CASE 
+                                    WHEN COALESCE(iv.peso_kg, 0) > 0 THEN iv.peso_kg 
+                                    ELSE iv.quantidade 
+                                END
+                            )
+                        )
                     END
                 ), 0) as lucro
                 FROM vendas v
@@ -2445,7 +2459,14 @@ class Database:
                 SELECT COALESCE(SUM(
                     CASE 
                         WHEN v.status = 'Anulada' THEN 0 
-                        ELSE (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade))
+                        ELSE (
+                            iv.subtotal - (
+                                iv.preco_custo_unitario * CASE 
+                                    WHEN COALESCE(iv.peso_kg, 0) > 0 THEN iv.peso_kg 
+                                    ELSE iv.quantidade 
+                                END
+                            )
+                        )
                     END
                 ), 0) as lucro
                 FROM vendas v
@@ -2487,7 +2508,14 @@ class Database:
             # Primeiro, verificar se existem vendas hoje
             query_vendas = """
                 SELECT v.id, v.valor_total, v.status, v.data_venda, v.origem,
-                       SUM(iv.subtotal - (iv.preco_custo_unitario * iv.quantidade)) as lucro
+                       SUM(
+                           iv.subtotal - (
+                               iv.preco_custo_unitario * CASE 
+                                   WHEN COALESCE(iv.peso_kg, 0) > 0 THEN iv.peso_kg 
+                                   ELSE iv.quantidade 
+                               END
+                           )
+                       ) as lucro
                 FROM vendas v
                 JOIN itens_venda iv ON v.id = iv.venda_id
                 WHERE DATE(v.data_venda) = DATE('now')
@@ -2496,7 +2524,7 @@ class Database:
                 ORDER BY v.data_venda DESC
             """
             vendas_hoje = self.fetchall(query_vendas)
-            print(f"[DEBUG] Encontradas {len(vendas_hoje)} vendas hoje")
+            print(f"Encontradas {len(vendas_hoje)} vendas hoje")
             
             lucro_total = 0.0
             
@@ -2806,7 +2834,14 @@ class Database:
                     iv.preco_unitario,
                     iv.subtotal,
                     iv.preco_custo_unitario,
-                    (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade)) as lucro_item
+                    (
+                        iv.subtotal - (
+                            iv.preco_custo_unitario * CASE 
+                                WHEN COALESCE(iv.peso_kg, 0) > 0 THEN iv.peso_kg 
+                                ELSE iv.quantidade 
+                            END
+                        )
+                    ) as lucro_item
                 FROM vendas v
                 LEFT JOIN itens_venda iv ON v.id = iv.venda_id
                 WHERE DATE(v.data_venda) = DATE('now')
@@ -3100,7 +3135,14 @@ class Database:
                     (SELECT COALESCE(SUM(
                         CASE
                             WHEN v.status = 'Anulada' THEN 0
-                            ELSE (iv.subtotal - (iv.preco_custo_unitario * iv.quantidade))
+                            ELSE (
+                                iv.subtotal - (
+                                    iv.preco_custo_unitario * CASE 
+                                        WHEN COALESCE(iv.peso_kg, 0) > 0 THEN iv.peso_kg 
+                                        ELSE iv.quantidade 
+                                    END
+                                )
+                            )
                         END
                     ), 0)
                     FROM vendas v
