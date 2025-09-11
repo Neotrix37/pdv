@@ -203,16 +203,28 @@ class ClienteRepository:
         # Tentar criar no servidor primeiro
         if self._is_online():
             try:
-                response = httpx.post(
-                    f"{self.api_base}/clientes/",
-                    json=cliente_data,
-                    timeout=5.0
-                )
+                # Mapear payload para o backend: 'id' = uuid
+                server_payload = {
+                    "id": cliente_data['uuid'],
+                    "nome": cliente_data['nome'],
+                    "documento": cliente_data.get('nuit') or cliente_data.get('documento'),
+                    "telefone": cliente_data.get('telefone', ''),
+                    "endereco": cliente_data.get('endereco', ''),
+                    "ativo": True,
+                }
+                response = httpx.post(f"{self.api_base}/clientes/", json=server_payload, timeout=5.0)
                 if response.status_code in [200, 201]:
                     cliente_data['synced'] = 1
                     server_cliente = response.json()
-                    cliente_data.update(server_cliente)
+                    # Backend retorna 'id' como UUID -> garantir refleto em uuid
+                    if server_cliente.get('id'):
+                        cliente_data['uuid'] = server_cliente['id']
+                    # Espelhar outros campos que façam sentido
                     print("Cliente criado no servidor com sucesso")
+                elif response.status_code in (409, 500) and 'duplicate key value violates unique constraint' in response.text:
+                    # Já existe no servidor com esse UUID -> considerar sincronizado
+                    cliente_data['synced'] = 1
+                    print("[CLIENTES][CREATE] Duplicado no servidor, marcando como sincronizado")
                 else:
                     print(f"Erro HTTP {response.status_code}: {response.text}")
             except Exception as e:
@@ -455,7 +467,16 @@ class ClienteRepository:
                             data = json.loads(ch['data_json']) if ch.get('data_json') else {}
                             entity_uuid = ch['entity_id']
                             if op == 'CREATE':
-                                resp = await client.post(f"{self.api_base}/clientes/", json=data, timeout=8.0)
+                                # Mapear payload para o backend
+                                payload = {
+                                    "id": data.get('uuid') or data.get('id'),
+                                    "nome": data.get('nome'),
+                                    "documento": data.get('nuit') or data.get('documento'),
+                                    "telefone": data.get('telefone', ''),
+                                    "endereco": data.get('endereco', ''),
+                                    "ativo": True,
+                                }
+                                resp = await client.post(f"{self.api_base}/clientes/", json=payload, timeout=8.0)
                                 print(f"[CLIENTES][CREATE] status: {resp.status_code}")
                                 if resp.status_code in (200, 201):
                                     self._mark_change_synced(ch['id'])
@@ -464,31 +485,49 @@ class ClienteRepository:
                                     try:
                                         with sqlite3.connect(str(self.db_path)) as conn:
                                             cur2 = conn.cursor()
-                                            cur2.execute("UPDATE clientes SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (entity_uuid,))
+                                            cur2.execute("UPDATE clientes SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (payload.get('id'),))
                                             conn.commit()
                                     except Exception:
                                         pass
-                                elif resp.status_code == 409:
+                                elif resp.status_code == 409 or (resp.status_code == 500 and 'duplicate key value violates unique constraint' in (await resp.text())):
                                     # Já existe no servidor: marcar como sincronizada e local synced
                                     self._mark_change_synced(ch['id'])
                                     mudancas_enviadas += 1
                                     try:
                                         with sqlite3.connect(str(self.db_path)) as conn:
                                             cur2 = conn.cursor()
-                                            cur2.execute("UPDATE clientes SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (entity_uuid,))
+                                            cur2.execute("UPDATE clientes SET synced = 1, updated_at = CURRENT_TIMESTAMP WHERE uuid = ?", (payload.get('id'),))
                                             conn.commit()
                                     except Exception:
                                         pass
                                 else:
                                     print(f"[CLIENTES][CREATE] erro: {resp.text}")
                             elif op == 'UPDATE':
-                                resp = await client.put(f"{self.api_base}/clientes/{entity_uuid}", json=data, timeout=8.0)
+                                # Mapear payload para o backend (id no path)
+                                payload = {
+                                    "nome": data.get('nome'),
+                                    "documento": data.get('nuit') or data.get('documento'),
+                                    "telefone": data.get('telefone', ''),
+                                    "endereco": data.get('endereco', ''),
+                                    "ativo": data.get('ativo', True),
+                                }
+                                entity_id = data.get('uuid') or entity_uuid
+                                resp = await client.put(f"{self.api_base}/clientes/{entity_id}", json=payload, timeout=8.0)
                                 print(f"[CLIENTES][UPDATE] status: {resp.status_code}")
                                 if resp.status_code == 200:
                                     self._mark_change_synced(ch['id'])
                                     mudancas_enviadas += 1
                                 elif resp.status_code == 404:
-                                    post = await client.post(f"{self.api_base}/clientes/", json=data, timeout=8.0)
+                                    # Tentar criar com o mesmo UUID
+                                    create_payload = {
+                                        "id": entity_id,
+                                        "nome": data.get('nome'),
+                                        "documento": data.get('nuit') or data.get('documento'),
+                                        "telefone": data.get('telefone', ''),
+                                        "endereco": data.get('endereco', ''),
+                                        "ativo": True,
+                                    }
+                                    post = await client.post(f"{self.api_base}/clientes/", json=create_payload, timeout=8.0)
                                     print(f"[CLIENTES][UPDATE->CREATE] status: {post.status_code}")
                                     if post.status_code in (200, 201):
                                         self._mark_change_synced(ch['id'])
@@ -702,25 +741,31 @@ class ClienteRepository:
                 
                 for cliente_servidor in clientes_servidor:
                     try:
-                        # Se cliente não tem UUID, pular
-                        if 'uuid' not in cliente_servidor or not cliente_servidor['uuid']:
-                            print(f"Cliente {cliente_servidor['nome']} sem UUID - pulando")
+                        # Aceitar 'uuid' ou 'id' do servidor como UUID
+                        server_uuid = (cliente_servidor.get('uuid') or cliente_servidor.get('id') or '').strip()
+                        if not server_uuid:
+                            nome_dbg = cliente_servidor.get('nome', 'N/A')
+                            print(f"Cliente {nome_dbg} sem UUID/ID - pulando")
                             continue
-                            
+                        
                         # Verificar se cliente já existe localmente pelo UUID
-                        cliente_local = self._get_cliente_by_uuid(cliente_servidor['uuid'])
+                        cliente_local = self._get_cliente_by_uuid(server_uuid)
                         
                         if cliente_local is None:
                             # Cliente novo - inserir localmente
+                            # Forçar 'uuid' no payload local
+                            cliente_servidor = {**cliente_servidor, 'uuid': server_uuid}
                             if self._inserir_cliente_do_servidor(cliente_servidor):
                                 clientes_recebidos += 1
-                                print(f"Cliente novo inserido: {cliente_servidor['nome']}")
+                                print(f"Cliente novo inserido: {cliente_servidor.get('nome','(sem nome)')}")
                         else:
                             # Cliente existe - verificar se precisa atualizar
                             if self._cliente_servidor_mais_recente(cliente_local, cliente_servidor):
+                                # Garantir 'uuid' no payload
+                                cliente_servidor = {**cliente_servidor, 'uuid': server_uuid}
                                 if self._atualizar_cliente_do_servidor(cliente_local['id'], cliente_servidor):
                                     clientes_atualizados += 1
-                                    print(f"Cliente atualizado: {cliente_servidor['nome']}")
+                                    print(f"Cliente atualizado: {cliente_servidor.get('nome','(sem nome)')}")
                     
                     except Exception as e:
                         print(f"Erro ao processar cliente {cliente_servidor.get('nome', 'N/A')}: {e}")
