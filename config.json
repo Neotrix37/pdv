@@ -7,5 +7,7 @@
     "logo": "",
     "server_url": "https://prototipo-production-c729.up.railway.app/api",
     "sync_enabled": true,
-    "sync_interval_seconds": 30
+    "sync_interval_seconds": 30,
+    "auto_reconcile_stock": true,
+    "auto_reconcile_sales": true
 }

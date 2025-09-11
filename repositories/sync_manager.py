@@ -21,6 +21,8 @@ class SyncManager:
         self._auto_check_backup_recovery()
         
         self.backend_url = self._get_backend_url()
+        self.auto_reconcile_sales = self._get_config_flag('auto_reconcile_sales', default=True)
+        self.auto_reconcile_stock = self._get_config_flag('auto_reconcile_stock', default=True)
         self.produto_repo = ProdutoRepository(backend_url=self.backend_url)
         self.usuario_repo = UsuarioRepository(backend_url=self.backend_url)
         self.cliente_repo = ClienteRepository(backend_url=self.backend_url)
@@ -61,6 +63,86 @@ class SyncManager:
         except Exception:
             pass
         return os.getenv("BACKEND_URL", "http://localhost:8000")
+
+    def _get_config_flag(self, key: str, default: bool = False) -> bool:
+        """Lê um booleano de config.json (no repo root) com fallback para default."""
+        try:
+            repo_root = os.path.dirname(os.path.dirname(__file__))
+            cfg_path = os.path.join(repo_root, 'config.json')
+            if os.path.exists(cfg_path):
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    conf = json.load(f)
+                    val = conf.get(key)
+                    if isinstance(val, bool):
+                        return val
+        except Exception:
+            pass
+        return bool(default)
+
+    def _reconciliar_vendas(self):
+        """Executa reconciliação de vendas usando o script de utilidade, se existir.
+        Melhor esforço: não falha a sincronização caso haja erro aqui.
+        """
+        try:
+            import importlib.util
+            import traceback
+            # Localizar script: pdv3/scripts/reconcile_sales_with_server.py
+            repo_root = os.path.dirname(os.path.dirname(__file__))
+            script_path = os.path.join(repo_root, 'scripts', 'reconcile_sales_with_server.py')
+            if not os.path.exists(script_path):
+                # Tentativa alternativa: subir um nível (quando rodando em contextos diferentes)
+                alt_path = os.path.join(os.path.dirname(repo_root), 'pdv3', 'scripts', 'reconcile_sales_with_server.py')
+                if os.path.exists(alt_path):
+                    script_path = alt_path
+            if not os.path.exists(script_path):
+                print("[RECON] Script reconcile_sales_with_server.py não encontrado - pulando")
+                return
+            spec = importlib.util.spec_from_file_location('reconcile_sales_with_server', script_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore
+            if hasattr(mod, 'main') and callable(mod.main):
+                print("[RECON] Executando reconciliação de vendas pós-sync...")
+                mod.main()
+                print("[RECON] Reconciliação de vendas concluída")
+            else:
+                print("[RECON] Função main() não encontrada no script - pulando")
+        except Exception as e:
+            print(f"[RECON] Erro ao executar reconciliação de vendas: {e}")
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
+
+    def _reconciliar_estoque(self):
+        """Executa reconciliação de estoque usando o script utilitário.
+        Sincroniza estoque e preços locais para o servidor quando divergirem.
+        """
+        try:
+            import importlib.util
+            import traceback
+            repo_root = os.path.dirname(os.path.dirname(__file__))
+            script_path = os.path.join(repo_root, 'scripts', 'reconcile_stock_with_server.py')
+            if not os.path.exists(script_path):
+                alt_path = os.path.join(os.path.dirname(repo_root), 'pdv3', 'scripts', 'reconcile_stock_with_server.py')
+                script_path = alt_path if os.path.exists(alt_path) else script_path
+            if not os.path.exists(script_path):
+                print("[RECON-STOCK] Script reconcile_stock_with_server.py não encontrado - pulando")
+                return
+            spec = importlib.util.spec_from_file_location('reconcile_stock_with_server', script_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore
+            if hasattr(mod, 'main') and callable(mod.main):
+                print("[RECON-STOCK] Executando reconciliação de estoque pós-sync...")
+                mod.main()
+                print("[RECON-STOCK] Reconciliação de estoque concluída")
+            else:
+                print("[RECON-STOCK] Função main() não encontrada no script - pulando")
+        except Exception as e:
+            print(f"[RECON-STOCK] Erro ao executar reconciliação de estoque: {e}")
+            try:
+                traceback.print_exc()
+            except Exception:
+                pass
 
     def _auto_check_backup_recovery(self):
         """Verificação automática de recuperação de backup na inicialização."""
@@ -130,7 +212,19 @@ class SyncManager:
 
         # Ordem crítica: produtos -> vendas, depois demais entidades
         await _sync_entity('produtos', self.produto_repo)
+        # Reconciliação de estoque após produtos (antes de vendas) para alinhar valores no servidor
+        try:
+            if self.auto_reconcile_stock:
+                self._reconciliar_estoque()
+        except Exception as e:
+            print(f"[SYNC] Falha ao reconciliar estoque pós-sync: {e}")
         await _sync_entity('vendas', self.venda_repo)
+        # Reconciliação automática de vendas pós-sync (configurável)
+        try:
+            if self.auto_reconcile_sales:
+                self._reconciliar_vendas()
+        except Exception as e:
+            print(f"[SYNC] Falha ao reconcilicar vendas pós-sync: {e}")
         # Sincronizar demais entidades
         await _sync_entity('usuarios', self.usuario_repo)
         await _sync_entity('clientes', self.cliente_repo)
