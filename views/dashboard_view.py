@@ -451,8 +451,9 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 vendas_dia = None
                 vendas_mes = None
 
-                url_dia_1 = f"{api_base}/metricas/vendas-dia"
-                url_mes_1 = f"{api_base}/metricas/vendas-mes"
+                # Passar a data local explicitamente para o backend evitar divergência de timezone
+                url_dia_1 = f"{api_base}/metricas/vendas-dia?data={hoje}"
+                url_mes_1 = f"{api_base}/metricas/vendas-mes?ano_mes={ano_mes}"
                 print(f"[WEB] Dashboard buscando métricas (tentativa {attempt+1}) em: {url_dia_1} e {url_mes_1}")
                 with httpx.Client(timeout=10.0) as client:
                     resp_dia = client.get(url_dia_1)

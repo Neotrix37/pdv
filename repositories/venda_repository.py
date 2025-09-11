@@ -798,17 +798,30 @@ class VendaRepository:
                         if not venda_valida:
                             continue
                         
+                        # Montar payload compatível com o backend (VendaCreate)
+                        # Campos aceitos: uuid?, cliente_id?, total, desconto, forma_pagamento, observacoes?, itens[]
                         venda_data = {
                             "uuid": venda[6],
-                            "data_venda": venda[1],
                             "total": float(venda[2]),
                             "desconto": float(venda[3]) if venda[3] else 0.0,
                             "forma_pagamento": venda[4] or "Dinheiro",
-                            "status": venda[5],
                             "itens": itens_data
                         }
                         
                         print(f"Enviando venda antiga: {venda[0]} - MT {venda[2]}")
+                        try:
+                            # Log resumido do payload para diagnóstico
+                            resumo_itens = [
+                                {
+                                    'produto_id': it['produto_id'][:8] + '...' if isinstance(it.get('produto_id'), str) and len(it['produto_id']) > 8 else it.get('produto_id'),
+                                    'qtd': it.get('quantidade'),
+                                    'peso_kg': it.get('peso_kg', 0),
+                                    'subtotal': it.get('subtotal')
+                                } for it in itens_data
+                            ]
+                            print(f"[DEBUG] Payload venda uuid={venda_data.get('uuid')} total={venda_data['total']} itens={len(itens_data)} -> {resumo_itens}")
+                        except Exception:
+                            pass
                         
                         # Tentar criar primeiro
                         response = await client.post(
@@ -860,7 +873,16 @@ class VendaRepository:
                             conn.commit()
                             enviados += 1
                         else:
+                            # Tentar extrair detalhe do erro para diagnóstico
+                            detail_msg = None
+                            try:
+                                j = response.json()
+                                detail_msg = j.get('detail') if isinstance(j, dict) else None
+                            except Exception:
+                                pass
                             print(f"Erro ao enviar venda: {response.status_code} - {response.text}")
+                            if detail_msg:
+                                print(f"[DETAIL] {detail_msg}")
                             
                     except Exception as e:
                         print(f"Erro ao processar venda {venda[0]}: {e}")
