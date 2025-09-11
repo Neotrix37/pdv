@@ -338,35 +338,95 @@ class ClienteRepository:
             # Retornar cliente atualizado
             return self._get_local_cliente_by_id(cliente_id)
     
-    def delete(self, cliente_id: int) -> bool:
-        """Deleta cliente (hard delete híbrido)."""
-        cliente_local = self._get_local_cliente_by_id(cliente_id)
-        if not cliente_local:
-            return False
-        
-        cliente_uuid = cliente_local['uuid']
-        
-        # Tentar deletar no servidor
-        if self._is_online():
+    def delete(self, cliente_id: int | str) -> bool:
+        """Deleta cliente (hard delete híbrido). Aceita ID local (int) ou UUID (str)."""
+        cliente_local = None
+        cliente_uuid = None
+
+        # Resolver cliente por ID numérico ou UUID
+        try:
+            if isinstance(cliente_id, int) or (isinstance(cliente_id, str) and cliente_id.isdigit()):
+                cid = int(cliente_id)
+                cliente_local = self._get_local_cliente_by_id(cid)
+                if not cliente_local:
+                    # Buscar sem restrição extra
+                    with sqlite3.connect(str(self.db_path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        cur = conn.cursor()
+                        cur.execute("SELECT * FROM clientes WHERE id = ?", (cid,))
+                        row = cur.fetchone()
+                        if row:
+                            cliente_local = dict(row)
+                if cliente_local:
+                    cliente_uuid = (cliente_local.get('uuid') or '').strip()
+            else:
+                cliente_uuid = str(cliente_id).strip()
+                cliente_local = self._get_cliente_by_uuid(cliente_uuid)
+                if not cliente_local:
+                    with sqlite3.connect(str(self.db_path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        cur = conn.cursor()
+                        cur.execute("SELECT * FROM clientes WHERE TRIM(COALESCE(uuid,'')) = ?", (cliente_uuid,))
+                        row = cur.fetchone()
+                        if row:
+                            cliente_local = dict(row)
+        except Exception as res_err:
+            print(f"[CLIENTE][DELETE] Falha ao resolver cliente {cliente_id}: {res_err}")
+
+        # Tentar deletar no servidor se tivermos UUID
+        synced = 0
+        if cliente_uuid and self._is_online():
             try:
-                response = httpx.delete(
-                    f"{self.api_base}/clientes/{cliente_uuid}",
-                    timeout=5.0
-                )
-                if response.status_code == 200:
-                    print("Cliente deletado no servidor com sucesso")
+                response = httpx.delete(f"{self.api_base}/clientes/{cliente_uuid}", timeout=5.0)
+                if response.status_code in (200, 204, 404):
+                    synced = 1
+                    try:
+                        self._ensure_change_log_table()
+                        self._log_change(cliente_uuid, 'DELETE', {},)
+                        # Marcar última change como synced
+                        # Busca a última entrada criada acima e marca como synced
+                        with sqlite3.connect(str(self.db_path)) as conn:
+                            cur = conn.cursor()
+                            cur.execute(
+                                """
+                                UPDATE change_log
+                                SET status='synced', updated_at = ?
+                                WHERE id = (
+                                    SELECT id FROM change_log
+                                    WHERE entity_type='clientes' AND entity_id=? AND operation='DELETE'
+                                    ORDER BY id DESC LIMIT 1
+                                )
+                                """,
+                                (datetime.now().isoformat(), cliente_uuid)
+                            )
+                            conn.commit()
+                    except Exception as le:
+                        print(f"[CLIENTE][LOG] Falha ao marcar change synced: {le}")
                 else:
-                    print(f"Erro HTTP {response.status_code}: {response.text}")
+                    print(f"[CLIENTE][DELETE] Servidor respondeu {response.status_code}: {response.text}")
             except Exception as e:
                 print(f"Erro ao deletar cliente no servidor: {e}")
-        
-        # Sempre deletar localmente
-        success = self._delete_local_cliente(cliente_id)
-        
-        # Log para sincronização
-        if success:
-            self._log_change(cliente_uuid, 'DELETE', {})
-        
+
+        # Deletar localmente por id ou uuid
+        success = False
+        try:
+            if cliente_local and 'id' in cliente_local:
+                success = self._delete_local_cliente(int(cliente_local['id']))
+            elif cliente_uuid:
+                success = self._delete_local_cliente_by_uuid(cliente_uuid)
+            else:
+                print("[CLIENTE][DELETE] Nao foi possivel localizar cliente local para exclusao")
+        except Exception as loc_err:
+            print(f"[CLIENTE][DELETE] Falha na exclusao local: {loc_err}")
+
+        # Se não sincronizado, garantir tombstone pendente
+        if cliente_uuid and synced == 0:
+            try:
+                self._ensure_change_log_table()
+                self._log_change(cliente_uuid, 'DELETE', {})
+            except Exception as le2:
+                print(f"[CLIENTE][LOG] Falha ao registrar tombstone pendente: {le2}")
+
         return success
     
     def _delete_local_cliente(self, cliente_id: int) -> bool:
@@ -375,6 +435,15 @@ class ClienteRepository:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM clientes WHERE id = ?", (cliente_id,))
             
+            success = cursor.rowcount > 0
+            conn.commit()
+            return success
+
+    def _delete_local_cliente_by_uuid(self, cliente_uuid: str) -> bool:
+        """Deleta cliente localmente usando UUID."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM clientes WHERE TRIM(COALESCE(uuid,'')) = ?", (cliente_uuid,))
             success = cursor.rowcount > 0
             conn.commit()
             return success
