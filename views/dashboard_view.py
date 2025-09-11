@@ -10,6 +10,7 @@ from utils.status_indicator import StatusIndicator
 import asyncio
 from typing import List, Dict, Any, Optional
 import os
+import threading
 import httpx
 
 class DashboardView(ft.UserControl, TranslationMixin):
@@ -23,6 +24,19 @@ class DashboardView(ft.UserControl, TranslationMixin):
         
         # Inicializar indicador de status de conexão
         self.status_indicator = StatusIndicator()
+        # Badge visual para estado online (carregando/usar cache)
+        self._online_badge_text = ft.Text(value="", size=12, color=ft.colors.BLACK)
+        self.online_badge = ft.Container(
+            visible=False,
+            content=ft.Row([
+                ft.Icon(ft.icons.CLOUD_DOWNLOAD, size=16, color=ft.colors.AMBER_900),
+                self._online_badge_text
+            ], spacing=6),
+            padding=6,
+            bgcolor=ft.colors.AMBER_100,
+            border_radius=8,
+            tooltip="Estado das métricas online"
+        )
         
         # Inicializar os textos dos valores com valores reais
         # Usar os novos métodos que consideram os saques
@@ -104,6 +118,10 @@ class DashboardView(ft.UserControl, TranslationMixin):
             "lucro_dia": lucro_dia,
             "lucro_mes": lucro_mes,
         }
+        # Controle de concorrência e throttle para fetch online (evita múltiplas threads simultâneas)
+        self._web_fetch_lock = threading.Lock()
+        self._web_fetch_inflight = False
+        self._web_last_fetch_ts = 0.0
         
         print(f"Build - Vendas mês: MT {total_vendas_mes:.2f}")
         print(f"Build - Lucro mês: MT {lucro_mes:.2f}")
@@ -404,6 +422,14 @@ class DashboardView(ft.UserControl, TranslationMixin):
 
     def _fetch_web_dashboard_numbers_sync(self):
         """Versão síncrona resiliente: busca números de vendas no backend com retry/backoff e cache."""
+        # Throttle: evitar executar mais que 1 vez a cada 2 segundos
+        now_ts = time.time()
+        if now_ts - self._web_last_fetch_ts < 2.0:
+            return
+        # Single-flight: impedir concorrência
+        if self._web_fetch_inflight:
+            return
+        self._web_fetch_inflight = True
         api_base = self._get_api_base()
         hoje = datetime.now().date().isoformat()
         ano_mes = datetime.now().strftime('%Y-%m')
@@ -414,6 +440,14 @@ class DashboardView(ft.UserControl, TranslationMixin):
         last_error = None
         for attempt in range(attempts):
             try:
+                # Mostrar badge de carregamento online
+                try:
+                    self._online_badge_text.value = "Carregando online…"
+                    self.online_badge.visible = True
+                    if hasattr(self, 'page') and self.page:
+                        self.update(); self.page.update()
+                except Exception:
+                    pass
                 vendas_dia = 0.0
                 vendas_mes = 0.0
                 lucro_dia = 0.0
@@ -451,6 +485,15 @@ class DashboardView(ft.UserControl, TranslationMixin):
                         self.page.update()
                 except Exception:
                     pass
+                # Esconder badge (sucesso)
+                try:
+                    self.online_badge.visible = False
+                    if hasattr(self, 'page') and self.page:
+                        self.update(); self.page.update()
+                except Exception:
+                    pass
+                self._web_last_fetch_ts = time.time()
+                self._web_fetch_inflight = False
                 return
             except Exception as ex:
                 last_error = ex
@@ -477,8 +520,19 @@ class DashboardView(ft.UserControl, TranslationMixin):
             except Exception:
                 pass
             print(f"[WEB] Métricas via cache (fallback). Último erro: {last_error}")
+            # Exibir badge informativo de cache/fallback
+            try:
+                self._online_badge_text.value = "Usando cache… (online acordando)"
+                self.online_badge.visible = True
+                if hasattr(self, 'page') and self.page:
+                    self.update(); self.page.update()
+            except Exception:
+                pass
         except Exception as e:
             print(f"Erro ao atualizar métricas (fallback): {e}")
+        finally:
+            self._web_last_fetch_ts = time.time()
+            self._web_fetch_inflight = False
 
     def build(self):
         # Diagnóstico: exibir permissões do usuário
@@ -516,6 +570,7 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     ft.Container(expand=True),  # Espaçador flexível
                     # Indicador de status de conexão
                     self.status_indicator,
+                    self.online_badge,
                     ft.Container(width=15),  # Espaço entre status e botões
                     ft.Row([
                         ft.IconButton(
