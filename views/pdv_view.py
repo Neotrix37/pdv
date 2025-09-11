@@ -1613,11 +1613,23 @@ class PDVView(ft.UserControl):
                     """, (item['id'],))
                     
                     # Verificar se produto foi encontrado e tem preço de custo
+                    # Suporta tanto dict quanto sqlite3.Row
                     preco_custo = 0.0
-                    if produto and produto.get('preco_custo') is not None:
-                        preco_custo = produto['preco_custo']
-                    else:
-                        print(f"⚠️ Produto {item['id']} não encontrado ou sem preço de custo - usando 0.0")
+                    try:
+                        if produto is not None:
+                            # Tenta acesso por chave (Row também suporta por nome)
+                            if 'preco_custo' in (produto.keys() if hasattr(produto, 'keys') else []):
+                                preco_custo = produto['preco_custo'] or 0.0
+                            else:
+                                # Tentativa alternativa convertendo para dict
+                                try:
+                                    preco_custo = dict(produto).get('preco_custo', 0.0) or 0.0
+                                except Exception:
+                                    preco_custo = 0.0
+                        else:
+                            print(f"⚠️ Produto {item['id']} não encontrado ao buscar preco_custo - usando 0.0")
+                    except Exception as ex:
+                        print(f"⚠️ Erro ao obter preco_custo do produto {item['id']}: {ex} - usando 0.0")
                     
                     # Inserir item
                     cursor = self.db.conn.cursor()
