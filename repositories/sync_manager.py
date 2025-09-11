@@ -225,6 +225,12 @@ class SyncManager:
                 self._reconciliar_vendas()
         except Exception as e:
             print(f"[SYNC] Falha ao reconcilicar vendas pós-sync: {e}")
+        # Rodar reconciliação de estoque novamente, pois vendas locais podem ter alterado estoque
+        try:
+            if self.auto_reconcile_stock:
+                self._reconciliar_estoque()
+        except Exception as e:
+            print(f"[SYNC] Falha ao reconciliar estoque pós-vendas: {e}")
         # Sincronizar demais entidades
         await _sync_entity('usuarios', self.usuario_repo)
         await _sync_entity('clientes', self.cliente_repo)
