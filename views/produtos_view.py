@@ -16,6 +16,8 @@ class ProdutosView(ft.UserControl, TranslationMixin):
         self.db = Database()
         self.produto_model = Produto()
         self.produto_repository = ProdutoRepository()
+        self._produto_para_excluir = None
+        self._confirm_dialog = None
         
         # Inicializa produto_em_edicao
         self.produto_em_edicao = None
@@ -351,7 +353,7 @@ class ProdutosView(ft.UserControl, TranslationMixin):
                                         icon_color=ft.colors.RED,
                                         tooltip="Excluir",
                                         data=produto,
-                                        on_click=self.excluir_produto
+                                        on_click=self.abrir_confirmacao_exclusao
                                     )
                                 ])
                             )
@@ -532,6 +534,52 @@ class ProdutosView(ft.UserControl, TranslationMixin):
         except Exception as error:
             print(f"Erro ao editar produto: {error}")
             self.mostrar_erro("Erro ao carregar dados do produto!")
+
+    def abrir_confirmacao_exclusao(self, e):
+        """Abre diálogo de confirmação antes de excluir um produto."""
+        try:
+            produto = e.control.data
+            self._produto_para_excluir = produto
+            titulo = ft.Text("Confirmar exclusão", color=ft.colors.BLACK)
+            mensagem = ft.Text(f"Tem certeza que deseja excluir o produto '{produto.get('nome','')}'?", color=ft.colors.BLACK)
+            self._confirm_dialog = ft.AlertDialog(
+                modal=True,
+                title=titulo,
+                content=mensagem,
+                actions=[
+                    ft.TextButton("Cancelar", on_click=self._cancelar_exclusao),
+                    ft.TextButton("Excluir", style=ft.ButtonStyle(color=ft.colors.RED), on_click=self._confirmar_exclusao)
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            self.page.dialog = self._confirm_dialog
+            self._confirm_dialog.open = True
+            self.page.update()
+        except Exception as err:
+            print(f"Erro ao abrir confirmacao: {err}")
+
+    def _cancelar_exclusao(self, e):
+        try:
+            if self._confirm_dialog:
+                self._confirm_dialog.open = False
+                self.page.update()
+        except Exception:
+            pass
+
+    def _confirmar_exclusao(self, e):
+        try:
+            if self._confirm_dialog:
+                self._confirm_dialog.open = False
+                self.page.update()
+            # Executar exclusão
+            if self._produto_para_excluir:
+                class _E: pass
+                fake_event = _E()
+                fake_event.control = type("C", (), {"data": self._produto_para_excluir})
+                self.excluir_produto(fake_event)
+                self._produto_para_excluir = None
+        except Exception as err:
+            print(f"Erro ao confirmar exclusao: {err}")
 
     def excluir_produto(self, e):
         try:

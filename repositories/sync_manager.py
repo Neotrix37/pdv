@@ -26,7 +26,7 @@ class SyncManager:
         self.cliente_repo = ClienteRepository(backend_url=self.backend_url)
         self.venda_repo = VendaRepository(backend_url=self.backend_url)
         
-        # Lista de repositórios para sincronização
+        # Lista de repositórios padrão (não usada para a ordem crítica)
         self.repositories = [
             ('produtos', self.produto_repo),
             ('usuarios', self.usuario_repo),
@@ -104,23 +104,18 @@ class SyncManager:
         total_enviadas = 0
         total_recebidas = 0
         erros = []
-        
-        # Sincronizar cada entidade
-        for nome, repo in self.repositories:
+
+        async def _sync_entity(nome: str, repo):
+            nonlocal resultados, total_enviadas, total_recebidas, erros
             try:
                 print(f"\n--- Sincronizando {nome} ---")
-                
-                # Executar sincronização bidirecional para todas as entidades
                 print(f"[SYNC] Executando sincronizacao bidirecional de {nome}...")
                 resultado = await repo.sincronizar_mudancas()
-                
                 resultados[nome] = resultado
                 total_enviadas += resultado.get('enviadas', 0)
                 total_recebidas += resultado.get('recebidas', 0)
-                
-                if resultado['status'] == 'error':
-                    erros.append(f"{nome}: {resultado['message']}")
-                
+                if resultado.get('status') == 'error':
+                    erros.append(f"{nome}: {resultado.get('message')}")
             except Exception as e:
                 erro_msg = f"Erro ao processar {nome}: {str(e)}"
                 print(erro_msg)
@@ -132,6 +127,13 @@ class SyncManager:
                     "recebidas": 0,
                     "mudancas_pendentes": 0
                 }
+
+        # Ordem crítica: produtos -> vendas, depois demais entidades
+        await _sync_entity('produtos', self.produto_repo)
+        await _sync_entity('vendas', self.venda_repo)
+        # Sincronizar demais entidades
+        await _sync_entity('usuarios', self.usuario_repo)
+        await _sync_entity('clientes', self.cliente_repo)
         
         # O bulk sync já é executado automaticamente no sincronizar_mudancas do produto_repo
         print("\n--- Bulk sync de produtos executado automaticamente ---")
@@ -142,6 +144,14 @@ class SyncManager:
         # Resultado final
         status_final = "success" if len(erros) == 0 else "partial" if total_enviadas > 0 else "error"
         
+        # Recomendações (UI pode usar para atualizar dashboard e alertar mapeamentos ausentes)
+        missing_items = 0
+        try:
+            vr = resultados.get('vendas', {})
+            missing_items = int(vr.get('itens_ignorados_por_produto_nao_mapeado', 0))
+        except Exception:
+            missing_items = 0
+
         resultado_final = {
             "status": status_final,
             "total_enviadas": total_enviadas,
@@ -150,7 +160,12 @@ class SyncManager:
             "timestamp": inicio.isoformat(),
             "resultados_detalhados": resultados,
             "erros": erros,
-            "message": self._gerar_mensagem_resumo(status_final, total_enviadas, total_recebidas, erros)
+            "message": self._gerar_mensagem_resumo(status_final, total_enviadas, total_recebidas, erros),
+            "recommendations": {
+                "rebuild_dashboard": True,
+                "missing_product_mappings": missing_items,
+                "action_hint": "Sincronize produtos novamente se existirem itens de venda ignorados."
+            }
         }
         
         print(f"\n=== SINCRONIZACAO CONCLUIDA ===")

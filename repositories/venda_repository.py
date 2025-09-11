@@ -17,6 +17,8 @@ class VendaRepository:
         self.db_path = self._get_database_path()
         self._ensure_migration()
         self._ensure_change_log_table()
+        # Acompanhar avisos do último pull
+        self._last_missing_products = set()
     
     def _get_backend_url(self) -> str:
         """Obtém a URL do backend do arquivo de configuração."""
@@ -483,7 +485,8 @@ class VendaRepository:
                 "message": f"Sincronização de vendas concluída. {vendas_antigas_enviadas} vendas antigas enviadas, {mudancas_enviadas} mudanças enviadas.",
                 "enviadas": vendas_antigas_enviadas + mudancas_enviadas,
                 "recebidas": vendas_recebidas,
-                "mudancas_pendentes": len(mudancas)
+                "mudancas_pendentes": len(mudancas),
+                "itens_ignorados_por_produto_nao_mapeado": len(getattr(self, "_last_missing_products", set()))
             }
             
         except Exception as e:
@@ -500,6 +503,7 @@ class VendaRepository:
         """Busca vendas do servidor e atualiza localmente."""
         print("FASE 1: Buscando vendas do servidor...")
         recebidas = 0
+        self._last_missing_products = set()
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"{self.api_base}/vendas/", timeout=10.0)
@@ -609,6 +613,10 @@ class VendaRepository:
                                     if not prod_row:
                                         # Produto não existe localmente; pular item (ou poderia criar placeholder)
                                         print(f"[VENDAS][PULL] Produto {prod_uuid} não encontrado localmente - pulando item")
+                                        try:
+                                            self._last_missing_products.add(prod_uuid)
+                                        except Exception:
+                                            pass
                                         continue
                                     produto_id_local = prod_row['id']
 
