@@ -455,7 +455,7 @@ class ClienteRepository:
                             data = json.loads(ch['data_json']) if ch.get('data_json') else {}
                             entity_uuid = ch['entity_id']
                             if op == 'CREATE':
-                                resp = await client.post(f"{self.backend_url}/api/clientes/", json=data, timeout=8.0)
+                                resp = await client.post(f"{self.api_base}/clientes/", json=data, timeout=8.0)
                                 print(f"[CLIENTES][CREATE] status: {resp.status_code}")
                                 if resp.status_code in (200, 201):
                                     self._mark_change_synced(ch['id'])
@@ -482,13 +482,13 @@ class ClienteRepository:
                                 else:
                                     print(f"[CLIENTES][CREATE] erro: {resp.text}")
                             elif op == 'UPDATE':
-                                resp = await client.put(f"{self.backend_url}/api/clientes/{entity_uuid}", json=data, timeout=8.0)
+                                resp = await client.put(f"{self.api_base}/clientes/{entity_uuid}", json=data, timeout=8.0)
                                 print(f"[CLIENTES][UPDATE] status: {resp.status_code}")
                                 if resp.status_code == 200:
                                     self._mark_change_synced(ch['id'])
                                     mudancas_enviadas += 1
                                 elif resp.status_code == 404:
-                                    post = await client.post(f"{self.backend_url}/api/clientes/", json=data, timeout=8.0)
+                                    post = await client.post(f"{self.api_base}/clientes/", json=data, timeout=8.0)
                                     print(f"[CLIENTES][UPDATE->CREATE] status: {post.status_code}")
                                     if post.status_code in (200, 201):
                                         self._mark_change_synced(ch['id'])
@@ -496,9 +496,9 @@ class ClienteRepository:
                                 else:
                                     print(f"[CLIENTES][UPDATE] erro: {resp.text}")
                             elif op == 'DELETE':
-                                resp = await client.delete(f"{self.backend_url}/api/clientes/{entity_uuid}", timeout=8.0)
+                                resp = await client.delete(f"{self.api_base}/clientes/{entity_uuid}", timeout=8.0)
                                 print(f"[CLIENTES][DELETE] status: {resp.status_code}")
-                                if resp.status_code in (200, 204):
+                                if resp.status_code in (200, 204, 404):
                                     self._mark_change_synced(ch['id'])
                                     mudancas_enviadas += 1
                             else:
