@@ -2209,14 +2209,15 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 print("🌐 Usando valores do servidor em cache")
                 total_vendas_dia = self._vendas_servidor_cache.get('vendas_dia', 0.0)
                 total_vendas_mes = self._vendas_servidor_cache.get('vendas_mes', 0.0)
-                total_vendas_congelador = 0.0  # Servidor não tem vendas congelador
+                total_vendas_congelador = self.db.get_total_vendas_congelador_hoje()  # Sempre local
                 # SEMPRE usar valores locais para estoque, mesmo com cache do servidor
                 valor_estoque = self.db.get_valor_estoque()
                 valor_potencial = self.db.get_valor_venda_estoque()
-                lucro_mes = 0.0  # Servidor não calcula lucro
-                lucro_dia = 0.0  # Servidor não calcula lucro
+                # Calcular lucro localmente mesmo em modo online
+                lucro_mes = self.db.get_lucro_mes() if self.usuario.get('is_admin') else 0.0
+                lucro_dia = self.db.get_lucro_dia() if self.usuario.get('is_admin') else 0.0
                 print(f"📊 Cache servidor - Dia: MT {total_vendas_dia:.2f}, Mês: MT {total_vendas_mes:.2f}")
-                print(f"💰 Estoque local - Valor: MT {valor_estoque:.2f}, Potencial: MT {valor_potencial:.2f}")
+                print(f"💰 Valores locais - Estoque: MT {valor_estoque:.2f}, Potencial: MT {valor_potencial:.2f}, Lucro dia: MT {lucro_dia:.2f}")
             elif not self.usuario.get('is_admin') and resetar:
                 # Se for funcionário e resetar=True, zerar os valores
                 total_vendas_mes = 0.0

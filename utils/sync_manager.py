@@ -1,6 +1,5 @@
 import json
 import logging
-import json
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -8,23 +7,54 @@ from typing import Dict, List, Any, Optional, Tuple
 import httpx
 import asyncio
 
-# Configuração de logging
+# Configuração de logging aprimorada
+def setup_sync_logger():
+    """Configura o sistema de logging para sincronização com rotação e níveis detalhados"""
+    logger = logging.getLogger('PDVSync')
+    logger.setLevel(logging.DEBUG)  # Nível mais detalhado
+    
+    # Limpar handlers existentes para evitar duplicação
+    logger.handlers.clear()
+    
+    # Formatar as mensagens de log com mais detalhes
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s'
+    )
+    
+    # Handler para arquivo principal com rotação
+    from logging.handlers import RotatingFileHandler
+    log_dir = os.path.join(os.path.expanduser('~'), 'pdv_logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Log principal com rotação (5MB, 3 backups)
+    main_log = os.path.join(log_dir, 'pdv_sync.log')
+    file_handler = RotatingFileHandler(
+        main_log, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
+    )
+    file_handler.setFormatter(detailed_formatter)
+    file_handler.setLevel(logging.DEBUG)
+    logger.addHandler(file_handler)
+    
+    # Log separado para erros
+    error_log = os.path.join(log_dir, 'pdv_sync_errors.log')
+    error_handler = RotatingFileHandler(
+        error_log, maxBytes=2*1024*1024, backupCount=2, encoding='utf-8'
+    )
+    error_handler.setFormatter(detailed_formatter)
+    error_handler.setLevel(logging.ERROR)
+    logger.addHandler(error_handler)
+    
+    # Handler para console (apenas INFO e acima)
+    console_handler = logging.StreamHandler()
+    console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.INFO)
+    logger.addHandler(console_handler)
+    
+    return logger
+
 # Configurar o logger principal
-logger = logging.getLogger('PDVSync')
-logger.setLevel(logging.INFO)
-
-# Formatar as mensagens de log
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# Adicionar handler para arquivo
-file_handler = logging.FileHandler(os.path.join(os.path.expanduser('~'), 'pdv_sync.log'))
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-# Adicionar handler para console
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+logger = setup_sync_logger()
 
 async def sync_all_tables() -> Dict[str, Any]:
     """
@@ -112,51 +142,77 @@ async def sync_all_tables() -> Dict[str, Any]:
                 }
                 
                 try:
-                    logger.info(f"Sincronizando tabela: {table_name}")
+                    logger.info(f"🔄 Iniciando sincronização da tabela: {table_name}")
+                    sync_start = datetime.now(timezone.utc)
                     
                     # 1. Enviar dados locais para o servidor (se configurado)
                     if table_config['upload']:
                         try:
+                            logger.debug(f"📤 Buscando dados não sincronizados de {table_name}")
                             unsynced = await manager._get_unsynced_data(table_name)
+                            
                             if unsynced:
-                                logger.info(f"Enviando {len(unsynced)} registros não sincronizados de {table_name}")
+                                logger.info(f"📤 Enviando {len(unsynced)} registros não sincronizados de {table_name}")
+                                logger.debug(f"📋 Registros a enviar: {[r.get('id', 'N/A') for r in unsynced[:5]]}{'...' if len(unsynced) > 5 else ''}")
+                                
                                 api_endpoint = manager.table_name_map.get(table_name, table_name)
+                                upload_start = datetime.now(timezone.utc)
                                 success, conflicts = await manager.send_to_server(api_endpoint, unsynced)
+                                upload_duration = (datetime.now(timezone.utc) - upload_start).total_seconds()
                                 
                                 if success:
                                     table_result['uploaded'] = len(unsynced) - len(conflicts)
                                     table_result['conflicts'] += len(conflicts)
-                                    table_result['message'] += f"Enviados {table_result['uploaded']} registros. "
+                                    table_result['message'] += f"Enviados {table_result['uploaded']} registros em {upload_duration:.2f}s. "
+                                    
+                                    logger.info(f"✅ Upload {table_name}: {table_result['uploaded']} enviados, {len(conflicts)} conflitos em {upload_duration:.2f}s")
                                     
                                     if conflicts:
                                         table_result['message'] += f"{len(conflicts)} conflitos encontrados. "
                                         table_result['status'] = 'partial'
+                                        logger.warning(f"⚠️ Conflitos em {table_name}: {[c.get('local_id', 'N/A') for c in conflicts[:3]]}{'...' if len(conflicts) > 3 else ''}")
                                 else:
                                     table_result['status'] = 'error'
                                     table_result['message'] += "Falha ao enviar dados. "
+                                    logger.error(f"❌ Falha no upload de {table_name}")
+                            else:
+                                logger.debug(f"📤 Nenhum registro não sincronizado encontrado em {table_name}")
                                     
                         except Exception as e:
-                            logger.error(f"Erro ao enviar dados de {table_name}: {str(e)}", exc_info=True)
+                            logger.error(f"❌ Erro ao enviar dados de {table_name}: {str(e)}", exc_info=True)
                             table_result['status'] = 'error'
                             table_result['message'] += f"Erro no envio: {str(e)}. "
                     
                     # 2. Buscar atualizações do servidor (se configurado)
                     if table_config['download'] and table_result['status'] != 'error':
                         try:
-                            logger.info(f"Buscando atualizações para {table_name}")
+                            logger.debug(f"📥 Buscando atualizações do servidor para {table_name}")
                             api_endpoint = manager.table_name_map.get(table_name, table_name)
+                            download_start = datetime.now(timezone.utc)
                             server_data, conflicts = await manager.fetch_from_server(api_endpoint)
+                            download_duration = (datetime.now(timezone.utc) - download_start).total_seconds()
                             
                             if server_data:
+                                logger.info(f"📥 Recebidos {len(server_data)} registros do servidor para {table_name}")
+                                logger.debug(f"📋 Registros recebidos: {[r.get('id', 'N/A') for r in server_data[:5]]}{'...' if len(server_data) > 5 else ''}")
+                                
                                 # Atualizar dados locais
+                                update_start = datetime.now(timezone.utc)
                                 updated = await manager._update_local_data(table_name, server_data)
+                                update_duration = (datetime.now(timezone.utc) - update_start).total_seconds()
+                                
                                 table_result['downloaded'] = len(updated)
-                                table_result['message'] += f"Recebidos {len(updated)} registros. "
+                                table_result['message'] += f"Recebidos {len(updated)} registros em {download_duration:.2f}s, atualizados em {update_duration:.2f}s. "
+                                
+                                logger.info(f"✅ Download {table_name}: {len(updated)} atualizados em {download_duration + update_duration:.2f}s")
                                 
                                 # Atualizar último sync se houver dados novos
                                 if updated:
                                     manager.last_sync = datetime.now(timezone.utc).isoformat()
-                                    manager.config.set('last_sync', manager.last_sync)
+                                    if hasattr(manager, 'config') and manager.config:
+                                        manager.config.set('last_sync', manager.last_sync)
+                            else:
+                                logger.debug(f"📥 Nenhum dado novo recebido do servidor para {table_name}")
                             
                             # Processar conflitos
                             if conflicts:
@@ -164,9 +220,10 @@ async def sync_all_tables() -> Dict[str, Any]:
                                 table_result['message'] += f"{len(conflicts)} conflitos no download. "
                                 if table_result['status'] != 'error':
                                     table_result['status'] = 'partial'
+                                logger.warning(f"⚠️ Conflitos no download de {table_name}: {len(conflicts)} encontrados")
                             
                         except Exception as e:
-                            logger.error(f"Erro ao buscar dados de {table_name}: {str(e)}", exc_info=True)
+                            logger.error(f"❌ Erro ao buscar dados de {table_name}: {str(e)}", exc_info=True)
                             table_result['status'] = 'error'
                             table_result['message'] += f"Erro ao buscar: {str(e)}. "
                     
@@ -361,12 +418,13 @@ class SyncManager:
         
         return None
     
-    async def _get_unsynced_data(self, table_name: str) -> List[Dict]:
+    async def _get_unsynced_data(self, table_name: str, batch_size: int = 1000) -> List[Dict]:
         """
-        Busca registros não sincronizados no banco local.
+        Busca registros não sincronizados no banco local com otimização para grandes volumes.
         
         Args:
             table_name: Nome da tabela
+            batch_size: Tamanho do lote para processamento (padrão: 1000)
             
         Returns:
             Lista de dicionários com os dados não sincronizados
@@ -380,27 +438,48 @@ class SyncManager:
                 cursor.execute(f"PRAGMA table_info({table_name})")
                 columns = [col[1] for col in cursor.fetchall()]
                 has_synced = 'synced' in columns
+                has_created_at = 'created_at' in columns
                 
-                # Construir a query baseada nas colunas disponíveis
+                # Construir a query otimizada baseada nas colunas disponíveis
                 if has_synced:
-                    query = f"""
+                    # Usar índice na coluna synced para melhor performance
+                    base_query = f"""
                     SELECT * FROM {table_name} 
-                    WHERE synced = 0 OR synced IS NULL
+                    WHERE (synced = 0 OR synced IS NULL)
                     """
+                    
+                    # Adicionar ordenação por data de criação se disponível
+                    if has_created_at:
+                        base_query += " ORDER BY created_at DESC"
+                    else:
+                        base_query += " ORDER BY id DESC"
+                    
+                    # Limitar resultados para evitar sobrecarga de memória
+                    query = f"{base_query} LIMIT {batch_size}"
                 else:
                     # Se não tiver coluna 'synced', considera que todos precisam ser sincronizados
-                    query = f"SELECT * FROM {table_name}"
+                    # mas limita para evitar sobrecarga
+                    query = f"SELECT * FROM {table_name} ORDER BY id DESC LIMIT {batch_size}"
                 
+                logger.debug(f"Executando query otimizada: {query}")
+                start_time = datetime.now()
                 cursor.execute(query)
                 rows = cursor.fetchall()
+                query_duration = (datetime.now() - start_time).total_seconds()
                 
                 # Converter para lista de dicionários
                 result = [dict(row) for row in rows]
-                logger.info(f"Encontrados {len(result)} registros não sincronizados em {table_name}")
+                
+                logger.info(f"📊 Query {table_name}: {len(result)} registros não sincronizados encontrados em {query_duration:.3f}s")
+                
+                # Log de aviso se atingiu o limite do lote
+                if len(result) == batch_size:
+                    logger.warning(f"⚠️ Limite de lote atingido para {table_name}. Pode haver mais registros não sincronizados.")
+                
                 return result
                 
         except sqlite3.Error as e:
-            logger.error(f"Erro ao buscar dados não sincronizados de {table_name}: {str(e)}")
+            logger.error(f"❌ Erro ao buscar dados não sincronizados de {table_name}: {str(e)}")
             raise
 
     async def _update_local_data(self, table_name: str, records: List[Dict]) -> List[Dict]:
