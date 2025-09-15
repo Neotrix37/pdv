@@ -20,6 +20,25 @@ class VendaRepository:
         # Acompanhar avisos do último pull
         self._last_missing_products = set()
 
+    def _get_user_uuid(self, local_usuario_id: Optional[int]) -> Optional[str]:
+        """Retorna o UUID (string) do usuário no servidor, a partir do id local.
+        Se não encontrar, retorna None."""
+        if not local_usuario_id:
+            return None
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                # Espera-se que a tabela usuarios tenha coluna 'uuid'
+                cur.execute("SELECT uuid FROM usuarios WHERE id = ?", (int(local_usuario_id),))
+                row = cur.fetchone()
+                if row:
+                    uuid_val = (row[0] or '').strip()
+                    return uuid_val or None
+        except Exception as _:
+            pass
+        return None
+
     def _get_default_usuario_id(self) -> int:
         """Obtém um usuário local padrão para atribuir às vendas vindas do servidor.
         Preferir admin; caso contrário, o primeiro usuário disponível; fallback para 1.
@@ -203,6 +222,17 @@ class VendaRepository:
         # Tentar criar no servidor primeiro
         if self._is_online():
             try:
+                # Mapear usuario_id local -> uuid do servidor
+                try:
+                    local_uid = venda_data.get('usuario_id')
+                    mapped_uuid = self._get_user_uuid(local_uid)
+                    if mapped_uuid:
+                        venda_data['usuario_id'] = mapped_uuid
+                    else:
+                        # Se não mapeou, enviar None para evitar erro 400
+                        venda_data['usuario_id'] = None
+                except Exception:
+                    venda_data['usuario_id'] = None
                 response = httpx.post(
                     f"{self.api_base}/vendas/",
                     json=venda_data,
@@ -455,7 +485,7 @@ class VendaRepository:
             mudancas = await self._obter_mudancas_pendentes()
             mudancas_enviadas = 0
             
-            print(f"FASE 3: Enviando mudancas pendentes de vendas...")
+            print("FASE 3: Enviando mudancas pendentes de vendas...")
             print(f"Encontradas {len(mudancas)} mudancas pendentes de vendas")
             
             if len(mudancas) == 0:
@@ -466,6 +496,13 @@ class VendaRepository:
                         try:
                             op = ch['operation']
                             data = json.loads(ch['data_json']) if ch.get('data_json') else {}
+                            # Mapear usuario_id local -> uuid antes de enviar
+                            try:
+                                local_uid = data.get('usuario_id')
+                                mapped_uuid = self._get_user_uuid(local_uid)
+                                data['usuario_id'] = mapped_uuid if mapped_uuid else None
+                            except Exception:
+                                data['usuario_id'] = None
                             entity_uuid = ch['entity_id']
                             if op == 'CREATE':
                                 resp = await client.post(f"{self.api_base}/vendas/", json=data, timeout=10.0)
