@@ -2073,10 +2073,43 @@ class DashboardView(ft.UserControl, TranslationMixin):
         
         # Função para atualizar a UI (síncrona)
         def update_ui(icon=None, disabled=False, content=None):
-            control.icon = icon
-            control.content = content
-            control.disabled = disabled
-            control.update()
+            # Garantir execução no thread da UI
+            def _apply():
+                try:
+                    control.icon = icon
+                    control.content = content
+                    control.disabled = disabled
+                    control.update()
+                except Exception:
+                    pass
+            try:
+                if hasattr(self, 'page') and self.page:
+                    self.page.invoke_later(_apply)
+                else:
+                    _apply()
+            except Exception:
+                _apply()
+
+        # Helper para exibir SnackBar com segurança na UI thread
+        def show_snack_safe(content: ft.Control, bgcolor: str, duration: int = 3000):
+            def _show():
+                try:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=content,
+                        bgcolor=bgcolor,
+                        duration=duration,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                except Exception:
+                    pass
+            try:
+                if hasattr(self, 'page') and self.page:
+                    self.page.invoke_later(_show)
+                else:
+                    _show()
+            except Exception:
+                _show()
         
         # Desabilitar o botão durante a sincronização, mas manter o ícone
         update_ui(icon=ft.icons.SYNC, disabled=True, content=None)
@@ -2108,12 +2141,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 if resultado.get("status") == "success":
                     enviadas = resultado.get("total_enviadas", 0)
                     recebidas = resultado.get("total_recebidas", 0)
-                    self.page.show_snack_bar(
-                        ft.SnackBar(
+                    show_snack_safe(
+                        ft.Row([
+                            ft.Icon(ft.icons.CHECK_CIRCLE, color=ft.colors.WHITE),
                             ft.Text(f"✅ Sincronização completa! Enviadas: {enviadas}, Recebidas: {recebidas}", color=ft.colors.WHITE),
-                            bgcolor=ft.colors.GREEN_700,
-                            duration=3000,
-                        )
+                        ], spacing=10),
+                        bgcolor=ft.colors.GREEN_700,
+                        duration=3000,
                     )
                     # Recalcular e reconstruir cards imediatamente
                     try:
@@ -2130,12 +2164,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     except Exception as _:
                         pass
                 elif resultado.get("status") == "offline":
-                    self.page.show_snack_bar(
-                        ft.SnackBar(
+                    show_snack_safe(
+                        ft.Row([
+                            ft.Icon(ft.icons.CLOUD_OFF, color=ft.colors.WHITE),
                             ft.Text("🔴 Backend offline - Sistema funcionando localmente", color=ft.colors.WHITE),
-                            bgcolor=ft.colors.ORANGE_700,
-                            duration=3000,
-                        )
+                        ], spacing=10),
+                        bgcolor=ft.colors.ORANGE_700,
+                        duration=3000,
                     )
                     # Mesmo offline, recalcular números locais
                     try:
@@ -2152,12 +2187,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
                     except Exception as _:
                         pass
                 else:
-                    self.page.show_snack_bar(
-                        ft.SnackBar(
+                    show_snack_safe(
+                        ft.Row([
+                            ft.Icon(ft.icons.ERROR, color=ft.colors.WHITE),
                             ft.Text("❌ Erro na sincronização. Verifique o console.", color=ft.colors.WHITE),
-                            bgcolor=ft.colors.RED_700,
-                            duration=5000,
-                        )
+                        ], spacing=10),
+                        bgcolor=ft.colors.RED_700,
+                        duration=5000,
                     )
                     # Ainda assim, tentar atualizar UI com o que houver localmente
                     try:
@@ -2176,12 +2212,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
                 
             except Exception as ex:
                 # Mostrar mensagem de erro
-                self.page.show_snack_bar(
-                    ft.SnackBar(
+                show_snack_safe(
+                    ft.Row([
+                        ft.Icon(ft.icons.ERROR, color=ft.colors.WHITE),
                         ft.Text(f"Erro na sincronização: {str(ex)}", color=ft.colors.WHITE),
-                        bgcolor=ft.colors.RED_700,
-                        duration=5000,
-                    )
+                    ], spacing=10),
+                    bgcolor=ft.colors.RED_700,
+                    duration=5000,
                 )
                 print(f"Erro na sincronização: {ex}")
                 

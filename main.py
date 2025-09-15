@@ -545,8 +545,27 @@ if __name__ == "__main__":
         "web_renderer": "auto"
     }
     
-    # Forçar modo desktop para executável
-    app_settings["view"] = ft.FLET_APP_HIDDEN
+    # Selecionar modo de visualização conforme flags/ambiente
+    try:
+        web_mode = os.getenv('WEB_MODE', '').lower() == 'true' or ('--web' in sys.argv)
+    except Exception:
+        web_mode = False
+    
+    if web_mode and not desktop_mode:
+        # Rodar no navegador
+        app_settings["view"] = ft.WEB_BROWSER
+        # Habilitar estratégia de rotas compatível com páginas estáticas
+        app_settings["route_url_strategy"] = "hash"
+        # Permitir definir porta via env WEB_PORT
+        try:
+            web_port = int(os.getenv('WEB_PORT') or 0)
+            if web_port > 0:
+                app_settings["port"] = web_port
+        except Exception:
+            pass
+    else:
+        # Modo desktop: janela oculta (gerenciada pelo app)
+        app_settings["view"] = ft.FLET_APP_HIDDEN
     
     # Iniciar o aplicativo
     ft.app(**app_settings)

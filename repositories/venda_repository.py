@@ -1049,7 +1049,7 @@ class VendaRepository:
             if limit is not None:
                 params['limit'] = limit
                 
-            url = f"{self.backend_url}/api/vendas/periodo"
+            url = f"{self.api_base}/vendas/periodo"
             print(f"📡 Buscando vendas por período: {url} - {params}")
             response = httpx.get(url, params=params, timeout=10.0)
             if response.status_code == 200:
@@ -1119,7 +1119,7 @@ class VendaRepository:
                     {status_sql},
                     'Sem itens' as itens
                 FROM vendas v
-                JOIN usuarios u ON v.usuario_id = u.id
+                LEFT JOIN usuarios u ON v.usuario_id = u.id
                 WHERE DATE(v.data_venda) BETWEEN ? AND ?
             """
             

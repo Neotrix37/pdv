@@ -49,6 +49,8 @@ class PDVView(ft.UserControl):
         self.total_venda = 0.0
         # Cache de produtos (especialmente para modo web)
         self._produtos_cache = []
+        # Flag para evitar double-click/duplo disparo ao adicionar
+        self._add_in_progress = False
 
         # Campo de busca
         self.busca_field = ft.TextField(
@@ -418,6 +420,11 @@ class PDVView(ft.UserControl):
                         (p.get('descricao') or '').lower().find(busca) >= 0
                     )
                 )] if busca else self._produtos_cache
+                # Garantir ordenação alfabética por nome também no filtro web
+                try:
+                    produtos = sorted(produtos, key=lambda p: (p.get('nome') or '').lower())
+                except Exception:
+                    pass
             else:
                 # Se a busca estiver vazia, recarregar todos os produtos
                 if not busca:
@@ -542,6 +549,11 @@ class PDVView(ft.UserControl):
                     print(f"[WEB] Erro ao buscar produtos: {ex}")
 
                 # Armazena no cache e continua fluxo de UI
+                # Ordenar alfabeticamente por nome
+                try:
+                    produtos.sort(key=lambda p: (p.get('nome') or '').lower())
+                except Exception:
+                    pass
                 self._produtos_cache = [p for p in produtos if p.get('estoque', 0) > 0]
             else:
                 # Verificar se a tabela produtos existe
@@ -895,16 +907,30 @@ class PDVView(ft.UserControl):
     def adicionar_ao_carrinho(self, e):
         """Adiciona produto ao carrinho"""
         try:
+            # Debounce para evitar adição duplicada por double-click
+            if getattr(self, '_add_in_progress', False):
+                return
+            self._add_in_progress = True
             produto = dict(e.control.data)  # Converter sqlite3.Row para dicionário
             
             if self.venda_atual_index < 0:
                 self.iniciar_nova_venda()
             
             # Se for produto vendido por peso, mostrar diálogo melhorado
-            if produto['venda_por_peso'] == 1:
+            vpp_raw = produto.get('venda_por_peso')
+            try:
+                vpp_flag = 1 if (vpp_raw in (1, True, '1', 'true', 'True')) else int(vpp_raw or 0) == 1
+            except Exception:
+                vpp_flag = 0
+            # Fallback: se unidade_medida == 'kg', tratar como por peso
+            if not vpp_flag and str(produto.get('unidade_medida', '')).lower() == 'kg':
+                vpp_flag = 1
+            if vpp_flag == 1:
                 def close_dialog(e):
                     self.page.dialog.open = False
                     self.page.update()
+                    # Liberar debounce quando fechar o modal
+                    self._add_in_progress = False
 
                 def calcular_por_peso(e):
                     try:
@@ -1096,6 +1122,7 @@ class PDVView(ft.UserControl):
                 )
                 self.page.dialog.open = True
                 self.page.update()
+                # Não executar finally para produtos por peso - modal deve ficar aberto
                 return
                 
             # Continua com o fluxo normal para produtos não vendidos por peso
@@ -1151,10 +1178,13 @@ class PDVView(ft.UserControl):
             self.atualizar_quantidade_produto(produto['id'])
             
             self.update()
-            
+        
         except Exception as e:
             print(f"Erro ao adicionar ao carrinho: {e}")
             print(f"Produto: {produto}")  # Debug
+        finally:
+            # Liberar debounce
+            self._add_in_progress = False
 
     def atualizar_quantidade_produto(self, produto_id):
         """Atualiza a quantidade exibida do produto baseado no carrinho"""
@@ -1210,31 +1240,39 @@ class PDVView(ft.UserControl):
                             )),
                             ft.DataCell(
                                 ft.Row([
+                                    # Botões compactos: [-] [qty] [+]   |   [delete]
                                     ft.IconButton(
-                                        icon=ft.icons.INFO_OUTLINE,
+                                        icon=ft.icons.REMOVE,
                                         icon_color=ft.colors.BLUE,
-                                        tooltip="Detalhes",
+                                        tooltip="Diminuir",
                                         data=item,
-                                        on_click=lambda e, item=item: self.mostrar_detalhes_produto_carrinho(item),
-                                        icon_size=20
+                                        on_click=self.diminuir_quantidade,
+                                        icon_size=18,
+                                    ),
+                                    ft.Text(
+                                        self._format_qtd_display(item),
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.colors.BLACK
                                     ),
                                     ft.IconButton(
-                                        icon=ft.icons.EDIT,
+                                        icon=ft.icons.ADD,
                                         icon_color=ft.colors.BLUE,
-                                        tooltip="Editar",
+                                        tooltip="Aumentar",
                                         data=item,
-                                        on_click=self.editar_item,
-                                        icon_size=20
+                                        on_click=self.aumentar_quantidade,
+                                        icon_size=18,
                                     ),
+                                    ft.VerticalDivider(width=10, color=ft.colors.TRANSPARENT),
                                     ft.IconButton(
-                                        icon=ft.icons.DELETE,
+                                        icon=ft.icons.DELETE_OUTLINE,
                                         icon_color=ft.colors.RED,
                                         tooltip="Remover",
                                         data=item,
                                         on_click=self.remover_item,
-                                        icon_size=20
+                                        icon_size=18
                                     )
-                                ])
+                                ], spacing=6, alignment=ft.MainAxisAlignment.END)
                             )
                         ]
                     )
@@ -1257,6 +1295,16 @@ class PDVView(ft.UserControl):
             self.update()
         except Exception as e:
             print(f"Erro ao atualizar carrinho: {e}")
+
+    def _format_qtd_display(self, item) -> str:
+        try:
+            if item.get('venda_por_peso'):
+                return f"{float(item.get('quantidade', 0)):.3f} kg"
+            q = item.get('quantidade', 0)
+            return str(int(q)) if q == int(q) else str(q)
+        except Exception as e:
+            print(f"Erro ao formatar quantidade: {e}")
+            return str(item.get('quantidade', 0))
 
     def mostrar_detalhes_produto_carrinho(self, item):
         """Mostra detalhes do produto do carrinho em um modal"""
@@ -2183,59 +2231,45 @@ class PDVView(ft.UserControl):
             self.update()
 
     def aumentar_quantidade(self, e):
-        """Aumenta a quantidade de um item no carrinho"""
+        """Aumenta a quantidade de um item no carrinho (event handler)."""
         try:
             item = e.control.data
+            # Para itens por peso, abrir o editor para ajuste preciso
+            if item.get('venda_por_peso'):
+                self.editar_item(e)
+                return
             # Verificar estoque disponível
-            produto_db = self.db.fetchone("""
-                SELECT estoque FROM produtos WHERE id = ?
-            """, (item['id'],))
-            
-            if not produto_db:
-                # Produto não encontrado no banco local, usar estoque do cache
-                if hasattr(self, '_produtos_cache'):
-                    produto_cache = next((p for p in self._produtos_cache if p['id'] == item['id']), None)
-                    if produto_cache:
-                        estoque_atual = produto_cache.get('estoque', 0)
-                    else:
-                        estoque_atual = 0
-                else:
-                    estoque_atual = 0
-            else:
-                estoque_atual = produto_db['estoque']
-            
-            # Calcular quantidade total no carrinho
-            qtd_carrinho = sum(
-                i['quantidade'] for i in self.itens 
-                if i['id'] == item['id']
-            )
-            
-            if qtd_carrinho < estoque_atual:
-                item['quantidade'] += 1
-                item['subtotal'] = item['quantidade'] * item['preco']
-                self.atualizar_carrinho()
-                # Atualizar quantidade do produto
-                self.atualizar_quantidade_produto(item['id'])
-            else:
-                self.page.show_snack_bar(
-                    ft.SnackBar(
-                        content=ft.Text("Estoque insuficiente!"),
-                        bgcolor=ft.colors.RED_700
-                    )
-                )
+            produto_db = self.db.fetchone("SELECT estoque FROM produtos WHERE id = ?", (item['id'],))
+            estoque_atual = float(produto_db['estoque']) if produto_db else float('inf')
+            # Calcular quantidade total atual do mesmo produto no carrinho
+            qtd_carrinho = sum(i['quantidade'] for i in self.itens if i['id'] == item['id'])
+            if qtd_carrinho + 1 > estoque_atual:
+                self.page.show_snack_bar(ft.SnackBar(content=ft.Text("Estoque insuficiente!"), bgcolor=ft.colors.RED_700))
+                return
+            item['quantidade'] = item.get('quantidade', 0) + 1
+            item['subtotal'] = float(item['quantidade']) * float(item['preco'])
+            self.atualizar_carrinho()
+            self.atualizar_quantidade_produto(item['id'])
         except Exception as e:
             print(f"Erro ao aumentar quantidade: {e}")
 
     def diminuir_quantidade(self, e):
-        """Diminui a quantidade de um item no carrinho"""
+        """Diminui a quantidade de um item no carrinho (event handler)."""
         try:
             item = e.control.data
-            if item['quantidade'] > 1:
-                item['quantidade'] -= 1
-                item['subtotal'] = item['quantidade'] * item['preco']
-                self.atualizar_carrinho()
-                # Atualizar quantidade do produto
-                self.atualizar_quantidade_produto(item['id'])
+            # Para itens por peso, abrir o editor para ajuste preciso
+            if item.get('venda_por_peso'):
+                self.editar_item(e)
+                return
+            # Unitários: -1 e remove se chegar a 0
+            nova_qtd = max(0, int(item.get('quantidade', 0)) - 1)
+            if nova_qtd == 0:
+                self.remover_item(e)
+                return
+            item['quantidade'] = nova_qtd
+            item['subtotal'] = float(item['quantidade']) * float(item['preco'])
+            self.atualizar_carrinho()
+            self.atualizar_quantidade_produto(item['id'])
         except Exception as e:
             print(f"Erro ao diminuir quantidade: {e}")
 
