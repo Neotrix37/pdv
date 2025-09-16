@@ -19,8 +19,15 @@ class BackupRecoveryManager:
         }
     
     def _get_database_path(self) -> Path:
-        """Obtém o caminho do banco de dados."""
-        return Path(__file__).parent / 'sistema.db'
+        """Obtém o caminho REAL do banco de dados ativo (APPDATA)."""
+        try:
+            # Usar o singleton Database para obter o caminho correto (APPDATA)
+            from .database import Database
+            db = Database()
+            return Path(str(db.db_path))
+        except Exception:
+            # Fallback: antigo (não recomendado)
+            return Path(__file__).parent / 'sistema.db'
     
     def detect_backup_restoration(self) -> Dict[str, Any]:
         """Detecta se o banco foi restaurado de backup verificando inconsistências."""
@@ -59,6 +66,9 @@ class BackupRecoveryManager:
                 
                 if not cursor.fetchone():
                     print(f"AVISO: Tabela {table} nao encontrada")
+                    # Considerar ausência de tabela como necessitando recuperação
+                    issues['missing_columns'][table] = required_columns
+                    issues['needs_recovery'] = True
                     continue
                 
                 # Verificar colunas existentes

@@ -355,7 +355,7 @@ class ConfiguracoesView(ft.UserControl, TranslationMixin):
                     ),
                     ft.TextButton(
                         get_text("restore", self.idioma.value),
-                        on_click=lambda x: self.confirmar_restauracao(self.selected_backup) if self.selected_backup else None
+                        on_click=lambda x: self.confirmar_restauracao_simplificada(self.selected_backup) if self.selected_backup else None
                     )
                 ],
                 actions_alignment=ft.MainAxisAlignment.END
@@ -376,186 +376,25 @@ class ConfiguracoesView(ft.UserControl, TranslationMixin):
             self.page.update()
 
     def confirmar_restauracao(self, backup_path):
-        """
-        Confirma e executa a restauração de um backup.
-        
-        Args:
-            backup_path (str): Caminho para o arquivo de backup a ser restaurado.
-        """
+        """Wrapper de compatibilidade: delega para a versão simplificada/robusta."""
         try:
-            # Fechar o diálogo de confirmação se estiver aberto
-            dlg = getattr(self, 'dialog', None)
-            if dlg and dlg.open:
-                dlg.open = False
-            
-            # Mostrar indicador de carregamento
-            loading_snackbar = ft.SnackBar(
-                content=ft.Row([
-                    ft.ProgressRing(width=20, height=20, stroke_width=2, color=ft.colors.WHITE),
-                    ft.Text(" Restaurando backup...", color=ft.colors.WHITE)
-                ]),
-                bgcolor=ft.colors.BLUE,
-                duration=0  # Fica visível até ser fechado explicitamente
-            )
-            self.page.show_snack_bar(loading_snackbar)
-            self.page.update()
-            
-            try:
-                # 1. Fazer backup do banco atual
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                pre_restore_backup = os.path.join(self.backup_dir, f"pre_restore_{timestamp}.db")
-                
-                if os.path.exists(str(self.db.db_path)):
-                    shutil.copy2(str(self.db.db_path), pre_restore_backup)
-                    print(f"Backup do banco atual criado em: {pre_restore_backup}")
-                
-                # 2. Fechar todas as conexões com o banco de forma segura
-                try:
-                    if hasattr(self.db, 'conn'):
-                        self.db.conn.close()
-                        print("Conexão com o banco de dados fechada")
-                    
-                    # 3. Aguardar um pouco para garantir que o sistema operacional libere o arquivo
-                    import time
-                    time.sleep(1)
-                    
-                    # 4. Remover o banco de dados existente se existir
-                    if os.path.exists(str(self.db.db_path)):
-                        os.remove(str(self.db.db_path))
-                    
-                    # 5. Verificar se o arquivo de backup existe e tem tamanho maior que zero
-                    if not os.path.exists(backup_path):
-                        raise FileNotFoundError(f"Arquivo de backup não encontrado: {backup_path}")
-                        
-                    backup_size = os.path.getsize(backup_path)
-                    print(f"Tamanho do arquivo de backup: {backup_size} bytes")
-                    
-                    if backup_size == 0:
-                        raise ValueError("O arquivo de backup está vazio")
-                    
-                    # 6. Copiar o backup para o local do banco de dados
-                    print(f"Restaurando backup de: {backup_path} para {self.db.db_path}")
-                    shutil.copy2(backup_path, str(self.db.db_path))
-                    print("Backup copiado com sucesso")
-                    
-                    # 7. Verificar se o arquivo foi copiado corretamente
-                    if not os.path.exists(str(self.db.db_path)):
-                        raise Exception("Falha ao copiar o arquivo de backup")
-                        
-                    # 8. Resetar o singleton do Database
-                    from database.database import Database
-                    Database._instance = None
-                    
-                    # 9. Recarregar a conexão com o banco de dados
-                    self.db = Database()
-                    
-                    # 10. Verificar se o banco foi restaurado corretamente
-                    try:
-                        cursor = self.db.conn.cursor()
-                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                        tables = cursor.fetchall()
-                        
-                        if not tables:
-                            raise Exception("O banco de dados restaurado não contém tabelas")
-                            
-                        print(f"Tabelas encontradas no banco restaurado: {[t[0] for t in tables]}")
-                        
-                    except sqlite3.DatabaseError as db_err:
-                        raise Exception(f"Erro ao acessar o banco de dados restaurado: {db_err}")
-                    
-                    print("Banco de dados restaurado com sucesso. Tabelas encontradas:", [t[0] for t in tables])
-                    
-                    # Verificar e corrigir esquema após restauração
-                    print("Verificando esquema após restauração...")
-                    try:
-                        self.db.verificar_e_corrigir_esquema_pos_restauracao()
-                        print("Esquema verificado e corrigido após restauração")
-                    except Exception as e:
-                        print(f"Aviso: Erro na verificação de esquema pós-restauração: {e}")
-                    
-                except Exception as e:
-                    # Em caso de erro, tentar restaurar o backup anterior
-                    if os.path.exists(pre_restore_backup):
-                        print("Erro durante a restauração. Tentando reverter para o backup anterior...")
-                        try:
-                            if os.path.exists(str(self.db.db_path)):
-                                os.remove(str(self.db.db_path))
-                            shutil.copy2(pre_restore_backup, str(self.db.db_path))
-                            print("Restauração do backup anterior concluída com sucesso")
-                        except Exception as restore_error:
-                            print(f"Falha ao restaurar backup anterior: {restore_error}")
-                    raise  # Relançar a exceção original
-                
-                # Esconder o indicador de carregamento
-                loading_snackbar.open = False
-                
-                # Mostrar mensagem de sucesso
-                success_snackbar = ft.SnackBar(
+            return self.confirmar_restauracao_simplificada(backup_path)
+        except Exception as e:
+            print(f"Erro na confirmar_restauracao (wrapper): {e}")
+            # Exibe snackbar genérico
+            self.page.show_snack_bar(
+                ft.SnackBar(
                     content=ft.Text(
-                        "✅ Backup restaurado com sucesso!",
-                        color=ft.colors.WHITE,
-                        weight=ft.FontWeight.BOLD
-                    ),
-                    bgcolor=ft.colors.GREEN_700,
-                    duration=3000
-                )
-                self.page.show_snack_bar(success_snackbar)
-                
-                # Aguardar um pouco para mostrar a mensagem
-                import time
-                time.sleep(2)
-                
-                # Usar função robusta de reinício
-                self.reiniciar_aplicacao_pos_restauracao()
-                
-            except Exception as e:
-                # Esconder o indicador de carregamento em caso de erro
-                if 'loading_snackbar' in locals():
-                    loading_snackbar.open = False
-                
-                # Mostrar mensagem de erro detalhada
-                error_msg = f"❌ Falha ao restaurar backup: {str(e)}"
-                print(error_msg)
-                
-                error_snackbar = ft.SnackBar(
-                    content=ft.Text(
-                        error_msg,
+                        f"❌ Erro ao restaurar: {str(e)}",
                         color=ft.colors.WHITE,
                         weight=ft.FontWeight.BOLD
                     ),
                     bgcolor=ft.colors.RED_700,
-                    duration=0  # Permanece até o usuário fechar
-                )
-                self.page.show_snack_bar(error_snackbar)
-                
-                # Tenta recriar a conexão com o banco de dados
-                try:
-                    from database.database import Database as NewDB
-                    self.db = NewDB()
-                except Exception as db_error:
-                    print(f"Falha ao recriar conexão com o banco: {db_error}")
-                
-                # Atualizar a interface
-                self.page.update()
-                
-        except Exception as e:
-            print(f"Erro inesperado durante a restauração: {e}")
-            if 'loading_snackbar' in locals():
-                loading_snackbar.open = False
-                
-            # Mostrar mensagem de erro genérica
-            self.page.show_snack_bar(
-                ft.SnackBar(
-                    content=ft.Text(
-                        "❌ Ocorreu um erro inesperado durante a restauração. Verifique os logs para mais detalhes.",
-                        color=ft.colors.WHITE,
-                        weight=ft.FontWeight.BOLD
-                    ),
-                    bgcolor=ft.colors.RED_900,
-                    duration=0  # Permanece até o usuário fechar
+                    duration=5000
                 )
             )
             self.page.update()
+            return False
 
     def confirmar_restauracao_simplificada(self, backup_path):
         """
@@ -625,32 +464,66 @@ class ConfiguracoesView(ft.UserControl, TranslationMixin):
                     print(f"[BACKUP] Banco atual idêntico ao backup - backup desnecessário")
                     print(f"[BACKUP] Tamanho: {banco_atual_size} bytes, Hash: {banco_atual_hash[:8]}...")
             
-            # Fechar conexão atual
-            if hasattr(self.db, 'conn') and self.db.conn:
-                self.db.conn.close()
-                print("[RESTAURAÇÃO] Conexão fechada")
-            
-            # Aguardar liberação do arquivo
-            import time
-            time.sleep(1)
-            
-            # Remover banco atual
-            if os.path.exists(str(self.db.db_path)):
-                os.remove(str(self.db.db_path))
-                print("[RESTAURAÇÃO] Banco atual removido")
-            
-            # Copiar backup para localização ativa
-            shutil.copy2(backup_path, str(self.db.db_path))
-            print(f"[RESTAURAÇÃO] Backup copiado para: {self.db.db_path}")
-            
-            # Verificar se cópia foi bem-sucedida
-            if not os.path.exists(str(self.db.db_path)):
-                raise Exception("Falha ao copiar arquivo de backup")
-            
-            # Resetar singleton e recriar conexão
-            from database.database import Database
-            Database._instance = None
-            self.db = Database()
+            # Tentar restauração ONLINE via API de backup do SQLite (evita lock de arquivo no Windows)
+            online_ok = False
+            try:
+                print("[RESTAURAÇÃO] Tentando restauração online via SQLite backup API...")
+                src = sqlite3.connect(backup_path, timeout=10)
+                try:
+                    # Desabilitar FKs temporariamente
+                    try:
+                        self.db.conn.execute("PRAGMA foreign_keys=OFF")
+                    except Exception:
+                        pass
+                    # Transação exclusiva para aplicar backup
+                    self.db.conn.isolation_level = None
+                    self.db.conn.execute("BEGIN IMMEDIATE")
+                    src.backup(self.db.conn)
+                    self.db.conn.execute("COMMIT")
+                    try:
+                        self.db.conn.execute("PRAGMA foreign_keys=ON")
+                    except Exception:
+                        pass
+                    online_ok = True
+                    print("[RESTAURAÇÃO] Restauração online concluída com sucesso")
+                finally:
+                    src.close()
+            except Exception as online_e:
+                print(f"[RESTAURAÇÃO] Falha na restauração online: {online_e}")
+
+            if not online_ok:
+                # Fallback: fechar conexão atual e substituir arquivo com retries
+                try:
+                    if hasattr(self.db, 'conn') and self.db.conn:
+                        try:
+                            self.db.conn.close()
+                        except Exception:
+                            pass
+                        print("[RESTAURAÇÃO] Conexão fechada")
+                    # Aguardar liberação do arquivo com retries
+                    import time
+                    attempts = 5
+                    for i in range(attempts):
+                        try:
+                            if os.path.exists(str(self.db.db_path)):
+                                os.remove(str(self.db.db_path))
+                            break
+                        except PermissionError as pe:
+                            if i == attempts - 1:
+                                raise pe
+                            time.sleep(0.6)
+                    print("[RESTAURAÇÃO] Banco atual removido")
+                    # Copiar backup
+                    shutil.copy2(backup_path, str(self.db.db_path))
+                    print(f"[RESTAURAÇÃO] Backup copiado para: {self.db.db_path}")
+                    if not os.path.exists(str(self.db.db_path)):
+                        raise Exception("Falha ao copiar arquivo de backup")
+                    # Resetar singleton e recriar conexão
+                    from database.database import Database
+                    Database._instance = None
+                    self.db = Database()
+                except Exception as fallback_e:
+                    raise Exception(f"Falha na restauração por cópia de arquivo: {fallback_e}")
             
             # Verificar integridade do banco restaurado
             cursor = self.db.conn.cursor()

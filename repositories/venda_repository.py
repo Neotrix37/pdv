@@ -20,11 +20,8 @@ class VendaRepository:
         # Acompanhar avisos do último pull
         self._last_missing_products = set()
 
-    def _get_user_uuid(self, local_usuario_id: Optional[int]) -> Optional[str]:
-        """Retorna o UUID (string) do usuário no servidor, a partir do id local.
-        Se não encontrar, retorna None."""
-        if not local_usuario_id:
-            return None
+    def _get_usuario_uuid_by_id(self, local_usuario_id):
+        """Busca o UUID de um usuário pelo ID local."""
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -34,10 +31,32 @@ class VendaRepository:
                 row = cur.fetchone()
                 if row:
                     uuid_val = (row[0] or '').strip()
-                    return uuid_val or None
-        except Exception as _:
-            pass
-        return None
+                    if uuid_val:
+                        return uuid_val
+                return None
+        except Exception as e:
+            print(f"Erro ao buscar UUID do usuário {local_usuario_id}: {e}")
+            return None
+
+    def _buscar_usuario_por_uuid(self, uuid_str):
+        """Busca o ID local de um usuário pelo UUID."""
+        try:
+            with sqlite3.connect(str(self.db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM usuarios WHERE uuid = ?", (uuid_str,))
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+                return None
+        except Exception as e:
+            print(f"Erro ao buscar usuário por UUID {uuid_str}: {e}")
+            return None
+
+    def _get_user_uuid(self, local_usuario_id: Optional[int]) -> Optional[str]:
+        """Retorna o UUID (string) do usuário no servidor, a partir do id local.
+        Se não encontrar, retorna None."""
+        return self._get_usuario_uuid_by_id(local_usuario_id)
 
     def _get_default_usuario_id(self) -> int:
         """Obtém um usuário local padrão para atribuir às vendas vindas do servidor.
@@ -393,6 +412,60 @@ class VendaRepository:
             self._log_change(venda_uuid, 'DELETE', {})
         
         return success
+
+    def cancelar_venda(self, venda_id_local: int, motivo: str = "") -> bool:
+        """Anula uma venda: marca como cancelada/Anulada no servidor e local.
+        - Servidor: PUT /api/vendas/{uuid} com { cancelada: true }
+        - Local: status='Anulada', motivo_alteracao, data_alteracao=now
+        - Se offline: apenas local + registra no change_log para envio posterior.
+        """
+        # Obter UUID da venda local
+        venda_local = self._get_local_venda_by_id(venda_id_local)
+        if not venda_local:
+            return False
+        venda_uuid = venda_local.get('uuid')
+
+        # Tentar atualizar no servidor
+        updated_remote = False
+        if self._is_online() and venda_uuid:
+            try:
+                resp = httpx.put(
+                    f"{self.api_base}/vendas/{venda_uuid}",
+                    json={"cancelada": True},
+                    timeout=10.0
+                )
+                updated_remote = resp.status_code == 200
+                if not updated_remote:
+                    print(f"[VENDAS][CANCELAR] Falha HTTP {resp.status_code}: {resp.text}")
+            except Exception as e:
+                print(f"[VENDAS][CANCELAR] Erro ao cancelar no servidor: {e}")
+
+        # Atualizar localmente sempre
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE vendas
+                SET status = 'Anulada',
+                    motivo_alteracao = ?,
+                    data_alteracao = ?,
+                    synced = CASE WHEN ? THEN 1 ELSE COALESCE(synced,0) END
+                WHERE id = ?
+                """,
+                (
+                    motivo or 'Venda anulada',
+                    datetime.now().isoformat(),
+                    1 if updated_remote else 0,
+                    venda_id_local,
+                )
+            )
+            conn.commit()
+
+        # Se não atualizou no servidor, logar para sync posterior
+        if not updated_remote and venda_uuid:
+            self._log_change(venda_uuid, 'UPDATE', {"cancelada": True, "motivo": motivo})
+
+        return True
     
     def _soft_delete_local_venda(self, venda_id: int) -> bool:
         """Soft delete da venda (marca como cancelada)."""
@@ -616,7 +689,17 @@ class VendaRepository:
                             origem = v.get('origem') or 'servidor'
                             valor_original_divida = float(v.get('valor_original_divida') or 0.0)
                             desconto_aplicado_divida = float(v.get('desconto', v.get('desconto_aplicado_divida') or 0.0))
-                            usuario_id_local = int(v.get('usuario_id') or 0) or self._get_default_usuario_id()
+                            # Tratar usuario_id que pode vir como UUID string do servidor
+                            usuario_id_raw = v.get('usuario_id') or 0
+                            if isinstance(usuario_id_raw, str) and len(usuario_id_raw) > 10:
+                                # É um UUID string, buscar o ID local correspondente
+                                usuario_id_local = self._buscar_usuario_por_uuid(usuario_id_raw) or self._get_default_usuario_id()
+                            else:
+                                # É um ID numérico ou vazio
+                                try:
+                                    usuario_id_local = int(usuario_id_raw) or self._get_default_usuario_id()
+                                except (ValueError, TypeError):
+                                    usuario_id_local = self._get_default_usuario_id()
 
                             if row is None:
                                 # Inserir venda nova
@@ -836,13 +919,30 @@ class VendaRepository:
                             continue
                         
                         # Montar payload compatível com o backend (VendaCreate)
-                        # Campos aceitos: uuid?, cliente_id?, total, desconto, forma_pagamento, observacoes?, itens[]
+                        # Campos aceitos: uuid?, cliente_id?, total, desconto, forma_pagamento, observacoes?, itens[], usuario_id (UUID)
+                        # Mapear usuario_id local -> uuid do servidor
+                        try:
+                            # venda local tuple indices: (id, data_venda, total, desconto_aplicado_divida, forma_pagamento, status, uuid)
+                            cur_uid = conn.cursor()
+                            cur_uid.execute("SELECT usuario_id FROM vendas WHERE id = ?", (venda[0],))
+                            row_uid = cur_uid.fetchone()
+                            local_usuario_id = int(row_uid[0]) if row_uid and row_uid[0] is not None else None
+                        except Exception:
+                            local_usuario_id = None
+
+                        usuario_uuid = None
+                        try:
+                            usuario_uuid = self._get_user_uuid(local_usuario_id)
+                        except Exception:
+                            usuario_uuid = None
+
                         venda_data = {
                             "uuid": venda[6],
                             "total": float(venda[2]),
                             "desconto": float(venda[3]) if venda[3] else 0.0,
                             "forma_pagamento": venda[4] or "Dinheiro",
-                            "itens": itens_data
+                            "itens": itens_data,
+                            "usuario_id": usuario_uuid if usuario_uuid else None,
                         }
                         
                         print(f"Enviando venda antiga: {venda[0]} - MT {venda[2]}")
@@ -1178,25 +1278,58 @@ class VendaRepository:
             return [dict(row) for row in cursor.fetchall()]
     
     def _normalizar_venda_servidor(self, venda: Dict[str, Any]) -> Dict[str, Any]:
-        """Normaliza dados de venda do servidor para compatibilidade com views locais."""
-        data_venda = venda.get('data_venda', '') or venda.get('created_at', '')
-        
-        # Extrair data e hora
-        if 'T' in data_venda:
-            data_parte, hora_parte = data_venda.split('T')
-            hora_parte = hora_parte.split('.')[0]  # Remove microsegundos se existirem
-        elif ' ' in data_venda:
-            data_parte, hora_parte = data_venda.split(' ', 1)
-        else:
-            data_parte = data_venda
-            hora_parte = "00:00:00"
-        
-        # Para vendas do servidor, buscar informações do usuário
+        """Normaliza dados de venda do servidor para compatibilidade com views locais.
+        - Prefere usuario_nome retornado pelo backend.
+        - Converte data/hora do servidor (UTC/offset) para horário local.
+        """
+        data_venda_raw = venda.get('data_venda', '') or venda.get('created_at', '')
+
+        # Converter para horário local se vier com timezone/UTC
+        data_parte = ''
+        hora_parte = ''
+        try:
+            from datetime import datetime, timezone
+            dt = None
+            # Normalizar sufixo Z
+            dv = data_venda_raw.replace('Z', '+00:00') if isinstance(data_venda_raw, str) else ''
+            try:
+                dt = datetime.fromisoformat(dv)
+            except Exception:
+                dt = None
+            if dt is not None:
+                # Converter para timezone local
+                local_dt = dt.astimezone()
+                data_parte = local_dt.strftime('%Y-%m-%d')
+                hora_parte = local_dt.strftime('%H:%M:%S')
+            else:
+                # Fallback simples
+                if 'T' in data_venda_raw:
+                    data_parte, hora_parte = data_venda_raw.split('T')
+                    hora_parte = hora_parte.split('.')[0]
+                elif ' ' in data_venda_raw:
+                    data_parte, hora_parte = data_venda_raw.split(' ', 1)
+                else:
+                    data_parte = data_venda_raw
+                    hora_parte = '00:00:00'
+        except Exception:
+            if isinstance(data_venda_raw, str):
+                if 'T' in data_venda_raw:
+                    data_parte, hora_parte = data_venda_raw.split('T')
+                    hora_parte = hora_parte.split('.')[0]
+                elif ' ' in data_venda_raw:
+                    data_parte, hora_parte = data_venda_raw.split(' ', 1)
+                else:
+                    data_parte = data_venda_raw
+                    hora_parte = '00:00:00'
+            else:
+                data_parte = ''
+                hora_parte = ''
+
+        # Determinar vendedor
+        vendedor = venda.get('usuario_nome') or 'Sistema'
         usuario_id = venda.get('usuario_id')
-        vendedor = 'Sistema'
-        
-        if usuario_id:
-            # Buscar nome do usuário no banco local
+        if not vendedor and usuario_id:
+            # Buscar nome local pelo uuid como fallback
             try:
                 with sqlite3.connect(str(self.db_path)) as conn:
                     conn.row_factory = sqlite3.Row
@@ -1210,14 +1343,14 @@ class VendaRepository:
             except Exception as e:
                 print(f"❌ Erro ao buscar usuário {usuario_id}: {e}")
                 vendedor = f'Usuário {str(usuario_id)[:8]}'
-        
+
         return {
-            'id': venda.get('id'),
-            'data_venda': data_venda,
+            'id': venda.get('id') or venda.get('uuid'),
+            'data_venda': data_venda_raw,
             'data': data_parte,
             'hora': hora_parte,
-            'vendedor': vendedor,
-            'total': venda.get('total', 0.0),
+            'vendedor': vendedor or 'Sistema',
+            'total': float(venda.get('total', 0.0) or 0.0),
             'forma_pagamento': venda.get('forma_pagamento', 'Não informado'),
             'status': venda.get('status', 'Ativa'),
             'usuario_id': usuario_id,

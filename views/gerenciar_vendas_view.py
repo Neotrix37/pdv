@@ -6,6 +6,9 @@ from utils.translation_mixin import TranslationMixin
 from utils.helpers import formatar_moeda
 from views.generic_table_style import apply_table_style
 import logging
+import threading
+import asyncio
+from repositories.sync_manager import SyncManager
 
 class GerenciarVendasView(ft.UserControl, TranslationMixin):
     def __init__(self, page: ft.Page, usuario):
@@ -791,12 +794,94 @@ class GerenciarVendasView(ft.UserControl, TranslationMixin):
             # Commit da transação
             print("\n--- Finalizando transação ---")
             self.db.conn.commit()
-            print("Transação concluída com sucesso")
-            
-            # Fechar diálogo
-            self.dialog_anulacao.open = False
-            self.page.update()
-            
+
+            # Sincronizar anulação com o servidor (híbrido)
+            try:
+                print("[SYNC] Enviando anulação para o servidor (híbrido)...")
+                self.venda_repo.cancelar_venda(venda_id, self.motivo_anulacao.value)
+                print("[SYNC] Anulação enviada (ou agendada) com sucesso")
+            except Exception as sync_e:
+                print(f"[SYNC] Falha ao enviar anulação: {sync_e}")
+
+            # Disparar sincronização completa em background (não bloqueia UI)
+            try:
+                def _run_sync():
+                    try:
+                        resultado = asyncio.run(SyncManager().sincronizar_todas_entidades())
+                        # Avisar conclusão na UI thread
+                        try:
+                            def _notify_done():
+                                try:
+                                    self.page.snack_bar = ft.SnackBar(
+                                        content=ft.Row([
+                                            ft.Icon(ft.icons.CHECK_CIRCLE, color=ft.colors.WHITE),
+                                            ft.Text("Sincronização concluída", color=ft.colors.WHITE)
+                                        ], spacing=10),
+                                        bgcolor=ft.colors.GREEN_700,
+                                        duration=2500
+                                    )
+                                    self.page.snack_bar.open = True
+                                    # Recarregar vendas e dashboard após sync para refletir backend
+                                    try:
+                                        self.carregar_vendas()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if hasattr(self.page, 'dashboard_view') and hasattr(self.page.dashboard_view, 'reload_metrics'):
+                                            self.page.dashboard_view.reload_metrics()
+                                    except Exception:
+                                        pass
+                                    self.page.update()
+                                except Exception:
+                                    pass
+                            if hasattr(self.page, 'invoke_later'):
+                                self.page.invoke_later(_notify_done)
+                            else:
+                                _notify_done()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                threading.Thread(target=_run_sync, daemon=True).start()
+                # Informar ao usuário
+                try:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Row([
+                            ft.ProgressRing(width=18, height=18, stroke_width=2, color=ft.colors.WHITE),
+                            ft.Text("Sincronização iniciada em segundo plano...", color=ft.colors.WHITE)
+                        ], spacing=10),
+                        bgcolor=ft.colors.BLUE_700,
+                        duration=2500
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Recarregar métricas do dashboard (se disponível)
+            try:
+                if hasattr(self.page, 'dashboard_view') and hasattr(self.page.dashboard_view, 'reload_metrics'):
+                    print("[DASHBOARD] Recarregando métricas após anulação...")
+                    self.page.dashboard_view.reload_metrics()
+            except Exception as dash_e:
+                print(f"[DASHBOARD] Erro ao recarregar métricas: {dash_e}")
+
+            # Feedback ao usuário e refresh da tabela
+            try:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Row([
+                        ft.Icon(ft.icons.CHECK_CIRCLE, color=ft.colors.WHITE),
+                        ft.Text("Venda anulada com sucesso!", color=ft.colors.WHITE)
+                    ], spacing=10),
+                    bgcolor=ft.colors.GREEN_700,
+                    duration=3000
+                )
+                self.page.snack_bar.open = True
+            except Exception:
+                pass
+            # Recarregar vendas atuais
             # Atualizar dashboard se existir
             if hasattr(self.page, 'dashboard_view') and self.page.dashboard_view:
                 self.page.dashboard_view.atualizar_valores()

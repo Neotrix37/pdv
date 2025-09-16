@@ -420,6 +420,13 @@ class DashboardView(ft.UserControl, TranslationMixin):
             return base[:-1]
         return base + '/api'
 
+    # Método utilitário público para outras views atualizarem os cards
+    def reload_metrics(self):
+        try:
+            self.atualizar_valores()
+        except Exception as e:
+            print(f"[DASHBOARD] Erro em reload_metrics: {e}")
+
     def _fetch_web_dashboard_numbers_sync(self):
         """Versão síncrona resiliente: busca números de vendas no backend com retry/backoff e cache."""
         # Throttle: evitar executar mais que 1 vez a cada 2 segundos
@@ -2111,8 +2118,9 @@ class DashboardView(ft.UserControl, TranslationMixin):
             except Exception:
                 _show()
         
-        # Desabilitar o botão durante a sincronização, mas manter o ícone
-        update_ui(icon=ft.icons.SYNC, disabled=True, content=None)
+        # Mostrar indicador de sincronização girando
+        sync_spinner = ft.ProgressRing(width=16, height=16, stroke_width=2, color=ft.colors.WHITE)
+        update_ui(icon=None, disabled=True, content=sync_spinner)
         
         # Função para executar a sincronização híbrida
         def sync_task():

@@ -4,6 +4,9 @@ from database.database import Database
 from views.generic_header import create_header
 import os
 import httpx
+import threading
+import asyncio
+from repositories.sync_manager import SyncManager
 if os.getenv('WEB_MODE') == 'true':
     from utils.rongta_printer_web import RongtaPrinter
 else:
@@ -1865,6 +1868,58 @@ class PDVView(ft.UserControl):
                 # Mostrar diálogo de conclusão
                 self.dialog_concluir.open = True
                 self.page.update()
+
+                # Disparar sincronização completa em background (não bloqueia UI)
+                try:
+                    def _run_sync_after_sale():
+                        try:
+                            resultado = asyncio.run(SyncManager().sincronizar_todas_entidades())
+                            # Notificar conclusão e atualizar dashboard
+                            def _notify_done():
+                                try:
+                                    self.page.snack_bar = ft.SnackBar(
+                                        content=ft.Row([
+                                            ft.Icon(ft.icons.CHECK_CIRCLE, color=ft.colors.WHITE),
+                                            ft.Text("Sincronização concluída", color=ft.colors.WHITE)
+                                        ], spacing=10),
+                                        bgcolor=ft.colors.GREEN_700,
+                                        duration=2500
+                                    )
+                                    self.page.snack_bar.open = True
+                                    try:
+                                        if hasattr(self.page, 'dashboard_view') and hasattr(self.page.dashboard_view, 'reload_metrics'):
+                                            self.page.dashboard_view.reload_metrics()
+                                    except Exception:
+                                        pass
+                                    self.page.update()
+                                except Exception:
+                                    pass
+                            try:
+                                if hasattr(self.page, 'invoke_later'):
+                                    self.page.invoke_later(_notify_done)
+                                else:
+                                    _notify_done()
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    threading.Thread(target=_run_sync_after_sale, daemon=True).start()
+                    # Informar ao usuário início da sync
+                    try:
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Row([
+                                ft.ProgressRing(width=18, height=18, stroke_width=2, color=ft.colors.WHITE),
+                                ft.Text("Sincronização iniciada em segundo plano...", color=ft.colors.WHITE)
+                            ], spacing=10),
+                            bgcolor=ft.colors.BLUE_700,
+                            duration=2500
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
                 
             except Exception as error:
                 self.db.conn.rollback()

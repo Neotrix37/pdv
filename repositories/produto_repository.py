@@ -1312,12 +1312,16 @@ class ProdutoRepository:
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 cursor = conn.cursor()
+                # Normalizar flags/valores vindos do servidor
+                vpp_val = 1 if (produto_servidor.get('venda_por_peso') in (1, True, '1', 'true', 'True')) else 0
+                unidade = produto_servidor.get('unidade_medida', 'un')
                 cursor.execute("""
                     INSERT INTO produtos (
                         codigo, nome, descricao, preco_custo, preco_venda,
                         categoria_id, fornecedor_id, estoque, estoque_minimo,
+                        venda_por_peso, unidade_medida,
                         uuid, synced, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """, (
                     produto_servidor['codigo'],
                     produto_servidor['nome'],
@@ -1328,6 +1332,8 @@ class ProdutoRepository:
                     produto_servidor.get('fornecedor_id'),
                     produto_servidor.get('estoque', produto_servidor.get('estoque_atual', 0)),
                     produto_servidor.get('estoque_minimo', 0),
+                    vpp_val,
+                    unidade,
                     produto_servidor['uuid'],
                     produto_servidor.get('created_at'),
                     produto_servidor.get('updated_at')
@@ -1373,6 +1379,9 @@ class ProdutoRepository:
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 cursor = conn.cursor()
+                # Normalizar flags/valores vindos do servidor
+                vpp_val = 1 if (produto_servidor.get('venda_por_peso') in (1, True, '1', 'true', 'True')) else 0
+                unidade = produto_servidor.get('unidade_medida', 'un')
                 cursor.execute("""
                     UPDATE produtos SET
                         codigo = ?,
@@ -1384,7 +1393,8 @@ class ProdutoRepository:
                         fornecedor_id = ?,
                         estoque_minimo = ?,
                         estoque_servidor = ?,
-                        synced = 1,
+                        venda_por_peso = ?,
+                        unidade_medida = ?,
                         updated_at = ?
                     WHERE id = ?
                 """, (
@@ -1397,6 +1407,8 @@ class ProdutoRepository:
                     produto_servidor.get('fornecedor_id'),
                     produto_servidor.get('estoque_minimo', 0),
                     produto_servidor.get('estoque', 0),  # salvar somente em estoque_servidor
+                    vpp_val,
+                    unidade,
                     produto_servidor.get('updated_at'),
                     produto_id
                 ))
